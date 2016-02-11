@@ -9,6 +9,8 @@ import Data.ByteString.Char8
 import Data.JSString
 import Data.Monoid ((<>))
 import GHCJS.DOM.CanvasRenderingContext2D
+import GHCJS.DOM.ClientRect
+import GHCJS.DOM.Element
 import GHCJS.DOM.HTMLCanvasElement
 import GHCJS.DOM.Types hiding (Event)
 import GHCJS.Marshal (fromJSVal)
@@ -36,25 +38,41 @@ canvH, canvW :: Int
 canvW = 200
 canvH = 128
 
+
 drawingArea :: MonadWidget t m => DrawingAreaConfig t -> m (DrawingArea t)
 drawingArea cfg = do
-  canvEl <- fmap (castToHTMLCanvasElement . _el_element . fst) $
-    elAttr' "canvas" ("id" =: "canvas"
+  (cEl,_) <- elAttr' "canvas" ("id" =: "canvas"
                       <> "width"  =: show canvW
                       <> "height" =: show canvH) $ return ()
+
+  let canvEl = (castToHTMLCanvasElement . _el_element) cEl
+
   Just ctx <- liftIO $ fromJSVal =<< getContext canvEl ("2d" :: JSString)
   performEvent_ $ (const $ liftIO (clearArea ctx canvEl)) <$> _drawingAreaConfig_clear cfg
 
   pixels <- performEvent (liftIO (getCanvas canvEl) <$ _drawingAreaConfig_send cfg)
 
-  return  (DrawingArea canvEl pixels)
+  return  (DrawingArea cEl pixels)
 
 
 relativeCoords :: MonadWidget t m => El t -> m (Dynamic t (Maybe (Double,Double)))
-relativeCoords el = holdDyn Nothing $
-  leftmost [fmap f (domEvent Mousemove el)
-           ,Nothing <$ domEvent Mouseleave el]
-    where f (x,y) = Just (fromIntegral x, fromIntegral y)
+relativeCoords el = do
+  -- Just cr <- liftIO (getBoundingClientRect (_el_element el))
+  -- t <- getTop cr
+  -- l <- getLeft cr
+  -- liftIO $ print t
+  -- let f l t (x,y) = Just (fromIntegral x - realToFrac l, fromIntegral y - realToFrac t)
+  -- crEvents <- performEvent (liftIO (getBoundingClientRect $ _el_element el) <$> domEvent Mousemove el)
+
+  let moveFunc (x,y) = do
+        Just cr <- getBoundingClientRect (_el_element el)
+        t <- fmap (floor) (getTop cr)
+        l <- fmap (floor) (getLeft cr)
+        return $ Just (fromIntegral $ x - l, fromIntegral $ y - t)
+  p <- performEvent $ leftmost [return Nothing <$ domEvent Mouseleave el
+                               , (fmap moveFunc (domEvent Mousemove el))]
+  holdDyn Nothing p
+
 
 
 getCanvas :: HTMLCanvasElement -> IO ByteString
@@ -85,5 +103,7 @@ main :: IO ()
 main = mainWidget $ mdo
   pb <- getPostBuild
   text "test"
-  da <- drawingArea (DrawingAreaConfig never (constant 10) (constant "rgba(100,100,0,1)") never never never never)
+  da <- drawingArea (DrawingAreaConfig pb (constant 10) (constant "rgba(100,100,0,1)") never never never never)
+  coords <- relativeCoords (_drawingArea_el da)
+  display coords
   return ()
