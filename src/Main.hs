@@ -3,9 +3,17 @@
 
 module Main where
 
+import           GHCJS.DOM
+import           GHCJS.DOM.Document
+import           GHCJS.DOM.HTMLElement
+import           GHCJS.DOM.HTMLDocument
+
+import Control.Concurrent
 import Control.Monad.Trans (liftIO)
+import Control.Monad (liftM)
 import Control.Monad.IO.Class
 import Data.ByteString.Char8
+import Data.Time
 import Data.JSString
 import Data.Monoid ((<>))
 import GHCJS.DOM.CanvasRenderingContext2D
@@ -18,6 +26,8 @@ import GHCJS.Types
 import GHCJS.DOM.Enums
 import Reflex
 import Reflex.Dom hiding (restore)
+import System.Random (StdGen, getStdGen)
+import System.Random.MWC hiding (restore, save)
 
 data DrawingAreaConfig t = DrawingAreaConfig
   { _drawingAreaConfig_clear  :: Event t ()
@@ -98,6 +108,38 @@ paint ctx r c (x,y) = do
   arc ctx (realToFrac x) (realToFrac y) (realToFrac r) 0 (2*pi) True
   fill ctx CanvasWindingRuleNonzero
   restore ctx
+
+------------------------------------------------------------------------------
+waitUntilJust :: IO (Maybe a) -> IO a
+waitUntilJust a = do
+    mx <- a
+    case mx of
+      Just x -> return x
+      Nothing -> do
+        threadDelay 10000
+        waitUntilJust a
+
+
+main' :: IO ()
+main' = do
+  tStart <- getCurrentTime
+  rnd    <- getStdGen
+  runWebGUI $ \webView -> do
+    doc <- waitUntilJust $ liftM (fmap castToHTMLDocument) $
+           webViewGetDomDocument webView
+    let btag = "reflex-area" :: String
+    root <- waitUntilJust $ liftM (fmap castToHTMLElement) $
+            getElementById doc btag
+    attachWidget root webView (runApp tStart rnd)
+
+runApp :: MonadWidget t m => UTCTime -> StdGen -> m ()
+runApp t0 rng = mdo
+  pb <- getPostBuild
+  text "test"
+  da <- drawingArea (DrawingAreaConfig pb (constant 10) (constant "rgba(100,100,0,1)") never never never never)
+  coords <- relativeCoords (_drawingArea_el da)
+  display coords
+  return ()
 
 main :: IO ()
 main = mainWidget $ mdo
