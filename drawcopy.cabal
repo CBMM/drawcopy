@@ -20,7 +20,9 @@ executable drawcopy
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base >=4.8 && <4.9, 
+                       bifunctors,
                        bytestring,
+                       lens,
                        mtl,
                        mwc-random,
                        transformers,
