@@ -68,7 +68,7 @@ data DrawingAreaState = DAState
   }
 
 instance Show DrawingAreaState where
-  show das = show $ _dasCurrentStroke das
+  show das = show $ _dasStrokes das
 
 das0 :: DrawingAreaState
 das0 = DAState Nothing False [] [] [] False
@@ -77,9 +77,11 @@ data DrawingAreaUpdate = DAMakePoint TimedCoord
                          -- ^ Add a timestamped point to the current stroke
                        | DAUndo
                          -- ^ Undo the last stroke
-                       | DASetStroking (Maybe ImageData)
+                       -- | DASetStroking (Maybe ImageData)
+                       | DASetStroking Bool
                          -- ^ Start a new stroke (Just rasterize)
                          --   or end the current one (Nothing)
+                       | DASetBackground ImageData
 
 drawingAreaUpdate :: DrawingAreaUpdate -> DrawingAreaState -> DrawingAreaState
 drawingAreaUpdate DAUndo d =
@@ -91,16 +93,17 @@ drawingAreaUpdate DAUndo d =
     (strokes', unstrokes') = case _dasStrokes d of
       []     -> ([], _dasUndoneStrokes d)
       (x:xs) -> (xs, x : _dasUndoneStrokes d)
-drawingAreaUpdate (DASetStroking (Just b))  d =  -- Click
-  d { _dasStroking      = True
-    , _dasCurrentBuffer = Just b }
-drawingAreaUpdate (DASetStroking Nothing) d =    -- Unclick
+drawingAreaUpdate (DASetStroking True) d = -- (Just b))  d =  -- Click
+  d { _dasStroking      = True }
+drawingAreaUpdate (DASetStroking False) d = -- Nothing) d =    -- Unclick
   d { _dasCurrentStroke = []
     , _dasStroking      = False
     , _dasStrokes      =  _dasCurrentStroke d : _dasStrokes d
     }
 drawingAreaUpdate (DAMakePoint p) d =
   d { _dasCurrentStroke = p : _dasCurrentStroke d }
+drawingAreaUpdate (DASetBackground b) d =
+  d { _dasCurrentBuffer = Just b }
 
 
 drawingArea :: MonadWidget t m => DrawingAreaConfig t -> m (DrawingArea t)
@@ -120,25 +123,36 @@ drawingArea cfg = mdo
   dragPoints  <- wrapDomEvent (_el_element cEl) (onEventName Mousemove) getTimedMouseEventCoords'
   firstPoints <- wrapDomEvent (_el_element cEl) (onEventName Mousedown) getTimedMouseEventCoords'
 
-  let pointEvents    = leftmost [ dragPoints , firstPoints ]
+  let pointEvents    = leftmost [ dragPoints, firstPoints ]
 
   let points = fmap DAMakePoint $ gate (_dasStroking <$> current state)pointEvents
 
-  strokeStarts <- fmap (DASetStroking . Just) <$>
-                  performEvent (ffor (domEvent Mousedown cEl) $ \_ ->
-                                 liftIO (getCanvasBuffer ctx canvEl))
-  strokeEnds <- return $ DASetStroking Nothing <$
+  -- strokeStarts <- fmap (DASetStroking . Just) <$>
+  --                 performEvent (ffor (domEvent Mousedown cEl) $ \_ ->
+  --                                liftIO (getCanvasBuffer ctx canvEl))
+  strokeStarts <- return $ DASetStroking True <$ domEvent Mousedown cEl
+
+  -- stokeEnds  <- performEvent (ffor (leftmost [domEvent Mousedown  cEl
+  --                                            ,domEvent Mouseleave cEl]) $
+  --                             \_ -> liftIO 
+  strokeEnds <- return $ DASetStroking False <$
                            leftmost [() <$ domEvent Mouseup    cEl
                                     ,domEvent Mouseleave cEl]
   -- undos <- never -- DAUndo <$ _drawingAreaConfig_undo cfg
+  backgroundUpdates <- (fmap.fmap) DASetBackground $
+    performEvent (ffor (tag (current state) strokeEnds) $ \s ->
+    liftIO (recomputeBackground ctx canvEl s))
 
   state <- foldDyn drawingAreaUpdate das0
-           (leftmost [points, strokeStarts, strokeEnds])
+           (leftmost [points, strokeStarts, strokeEnds, backgroundUpdates])
 
   tInit <- liftIO getCurrentTime
   ticks <- tickLossy 0.03 tInit
-  performEvent_ (ffor (tag (current state) ticks) $ \s -> liftIO $ redraw' ctx canvEl s)
 
+  performEvent_ (ffor (tag (current state) ticks) $ \s ->
+                  liftIO $ redraw ctx canvEl s)
+  performEvent_ (ffor (tag (current state) strokeStarts) $ \s ->
+                  liftIO (recomputeBackground ctx canvEl s) >> return ())
 
   -- display state
 
@@ -171,18 +185,10 @@ relativeCoords el = do
   holdDyn Nothing p
 
 
-
 getCanvasBuffer :: CanvasRenderingContext2D -> HTMLCanvasElement -> IO ImageData
 getCanvasBuffer ctx el = do
   d <- getImageData ctx 0 0 (realToFrac canvW) (realToFrac canvH)
   maybe (Prelude.error "No imagedata") return d
--- Data.ByteString.Char8.pack <$>
---   toDataURL el (Nothing :: Maybe String)
-
-
--- getCanvasBuffer' :: HTMLCanvasElement -> IO ByteString
--- getCanvasBuffer' el = return ""
-
 
 
 clearArea :: CanvasRenderingContext2D -> HTMLCanvasElement -> IO ()
@@ -201,14 +207,11 @@ recomputeBackground :: CanvasRenderingContext2D
 recomputeBackground ctx canv das = do
   save ctx
   clearArea ctx canv
-  forM_ (filter (not . null) (_dasStrokes das)) $ \((TC hT hX hY):ps) -> do
+  let c = "hsla(100,50%,50%,1)"
+  setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
+  forM_ (filter (not . null) (_dasCurrentStroke das : _dasStrokes das)) $ \((TC hT hX hY):ps) -> do
     moveTo ctx (fromIntegral hX) (fromIntegral hY)
     forM_ ps $ \(TC t1 x1 y1) -> do
-      let -- h = floor . (* 255) . (+ 0.5) . (/ 2) . sin . (2*pi *) $ realToFrac (diffUTCTime t t1)
-          -- c = "hsla(" ++ show h ++ "50%,45%,1)"
-          c = "hsla(100,50%,50%,1)"
-          -- c = "#bb00c2"
-      -- setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
       lineTo ctx (fromIntegral x1) (fromIntegral y1)
     stroke ctx
   Just bs <- getImageData ctx 0 0 (realToFrac canvW) (realToFrac canvH)
@@ -225,28 +228,6 @@ redraw :: CanvasRenderingContext2D
 redraw ctx canv das = do
   save ctx
   t <- getCurrentTime
-  when (not $ Nothing == _dasCurrentBuffer das) $ putImageData ctx (_dasCurrentBuffer das) 0 0
-  case _dasCurrentStroke das of
-    [] -> return ()
-    TC hT hX hY : ps -> do
-      moveTo ctx (fromIntegral hX) (fromIntegral hY)
-      forM_ ps $ \(TC t1 x1 y1) -> do
-        let h = floor . (* 255) . (+ 0.5) . (/ 2) . sin . (2*pi *) $ realToFrac (diffUTCTime t t1)
-            c = "hsla(" ++ show h ++ ",50%,45%,1)"
-            -- c = "hsla(100,50%,50%,1)"
-            -- c = "#bb00c2"
-        setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
-        lineTo ctx (fromIntegral x1) (fromIntegral y1)
-        stroke ctx
-  restore ctx
-
-redraw' :: CanvasRenderingContext2D
-        -> HTMLCanvasElement
-        -> DrawingAreaState
-        -> IO ()
-redraw' ctx canv das = do
-  save ctx
-  t <- getCurrentTime
   unless (Nothing == _dasCurrentBuffer das) $ putImageData ctx (_dasCurrentBuffer das) 0 0
   forM_ (Prelude.zip (_dasCurrentStroke das) (Prelude.tail $ _dasCurrentStroke das)) $ \(TC hT hX hY, TC hT' hX' hY') -> do
       beginPath ctx
@@ -260,18 +241,6 @@ redraw' ctx canv das = do
   restore ctx
 
 
-paint :: CanvasRenderingContext2D
-      -> Double
-      -> String
-      -> (Double,Double)
-      -> IO ()
-paint ctx r c (x,y) = do
-  save ctx
-  setFillStyle ctx (Just $ CanvasStyle $ jsval (toJSString c))
-  arc ctx (realToFrac x) (realToFrac y) (realToFrac r) 0 (2*pi) True
-  fill ctx CanvasWindingRuleNonzero
-  restore ctx
-
 main :: IO ()
 main = mainWidget $ mdo
   pb <- getPostBuild
@@ -281,36 +250,3 @@ main = mainWidget $ mdo
   coords <- relativeCoords (_drawingArea_el da)
   display coords
   return ()
-
--- ------------------------------------------------------------------------------
--- waitUntilJust :: IO (Maybe a) -> IO a
--- waitUntilJust a = do
---     mx <- a
---     case mx of
---       Just x -> return x
---       Nothing -> do
---         threadDelay 10000
---         waitUntilJust a
-
-
--- main' :: IO ()
--- main' = do
---   tStart <- getCurrentTime
---   rnd    <- getStdGen
---   runWebGUI $ \webView -> do
---     doc <- waitUntilJust $ liftM (fmap castToHTMLDocument) $
---            webViewGetDomDocument webView
---     let btag = "reflex-area" :: String
---     root <- waitUntilJust $ liftM (fmap castToHTMLElement) $
---             getElementById doc btag
---     attachWidget root webView (runApp tStart rnd)
-
--- runApp :: MonadWidget t m => UTCTime -> StdGen -> m ()
--- runApp t0 rng = mdo
---   pb <- getPostBuild
---   text "test"
---   da <- drawingArea (DrawingAreaConfig pb (constant 10) (constant "rgba(100,100,0,1)") never never never never)
---   coords <- relativeCoords (_drawingArea_el da)
---   display coords
---   return ()
-
