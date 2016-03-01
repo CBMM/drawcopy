@@ -280,8 +280,9 @@ interactionWidget = mdo
   da <- widgetHold (drawingArea defDAC >>= \d -> text "No image" >> return (_drawingArea_strokes d))
                    (fmap question (fmapMaybe id assignments))
 
+  submits <- button "Send"
   sendResult <- performRequestAsync $
-    ffor (updated (joinDyn da)) $ \r ->
+    ffor (tag (current $ joinDyn da) submits) $ \(r :: Result) ->
       XhrRequest "POST" "/api/response?advance" $
       XhrRequestConfig ("Content-Type" =: "application/json")
       Nothing Nothing Nothing (Just . BSL.unpack $ A.encode
