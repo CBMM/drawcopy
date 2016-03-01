@@ -1,6 +1,8 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE BangPatterns      #-}
-{-# LANGUAGE RecursiveDo       #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE RecursiveDo         #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
@@ -14,14 +16,17 @@ import           GHCJS.DOM.MouseEvent
 import Control.Concurrent
 import Control.Lens
 import Control.Monad.Trans (liftIO)
-import Control.Monad (liftM, unless, when)
+import Control.Monad (liftM, mzero, unless, when)
 import Control.Monad.IO.Class
+import qualified Data.Aeson as A
 import Data.Bitraversable (bisequence)
 import Data.ByteString.Char8 hiding (filter, null)
+import qualified Data.ByteString.Lazy.Char8 as BSL
 import Data.Foldable hiding (filter, null)
 import Data.Time
 import Data.JSString hiding (filter, null)
 import Data.Monoid ((<>))
+import qualified Data.Text as T
 import GHCJS.DOM.CanvasRenderingContext2D
 import GHCJS.DOM.ClientRect
 import GHCJS.DOM.Element
@@ -35,6 +40,10 @@ import Reflex.Dom hiding (restore)
 import System.Random (StdGen, getStdGen)
 import System.Random.MWC hiding (restore, save)
 
+import Tagging.User
+import Tagging.Stimulus
+import Tagging.Response
+
 data DrawingAreaConfig t = DrawingAreaConfig
   { _drawingAreaConfig_clear  :: Event t ()
   , _drawingAreaConfig_radius :: Behavior t Double
@@ -47,16 +56,24 @@ defDAC :: Reflex t => DrawingAreaConfig t
 defDAC = DrawingAreaConfig never (constant 10) (constant "black") never never
 
 data DrawingArea t = DrawingArea
-  { _drawingArea_el    :: El t
-  , _drawingArea_image :: Event t ImageData }
+  { _drawingArea_el      :: El t
+  , _drawingArea_strokes :: Dynamic t [[TimedCoord]]
+  , _drawingArea_image   :: Event t ImageData }
 
 canvH, canvW :: Int
-canvW = 200
-canvH = 128
+canvW = 400
+canvH = 320
 
 data TimedCoord = TC !UTCTime !Int !Int
   deriving (Eq, Show)
 
+instance A.ToJSON TimedCoord where
+  toJSON (TC t x y) = A.object
+    [ "t" A..= t , "x" A..= x , "y" A..= y]
+
+instance A.FromJSON TimedCoord where
+  parseJSON (A.Object o) = TC <$> o A..: "t" <*> o A..: "x" <*> o A..: "y"
+  parseJSON _            = mzero
 
 data DrawingAreaState = DAState
   { _dasCurrentBuffer :: Maybe ImageData
@@ -111,7 +128,7 @@ drawingArea cfg = mdo
 
   (cEl,_) <- elAttr' "canvas" ("id" =: "canvas"
                       <> "width"  =: show canvW
-                      <> "height" =: show canvH) $ return ()
+                      <> "height" =: show canvH) $ fin
 
   let canvEl = (castToHTMLCanvasElement . _el_element) cEl
 
@@ -120,21 +137,18 @@ drawingArea cfg = mdo
 
   pixels <- performEvent (liftIO (getCanvasBuffer ctx canvEl) <$ _drawingAreaConfig_send cfg)
 
-  dragPoints  <- wrapDomEvent (_el_element cEl) (onEventName Mousemove) getTimedMouseEventCoords'
-  firstPoints <- wrapDomEvent (_el_element cEl) (onEventName Mousedown) getTimedMouseEventCoords'
+  placeTime <- relativeCoords cEl
+
+  let dragPoints  = fmapMaybe id $ tag (current placeTime) (domEvent Mousemove cEl)
+
+  let firstPoints = fmapMaybe id $ tag (current placeTime) (domEvent Mousedown cEl)
 
   let pointEvents    = leftmost [ dragPoints, firstPoints ]
 
   let points = fmap DAMakePoint $ gate (_dasStroking <$> current state)pointEvents
 
-  -- strokeStarts <- fmap (DASetStroking . Just) <$>
-  --                 performEvent (ffor (domEvent Mousedown cEl) $ \_ ->
-  --                                liftIO (getCanvasBuffer ctx canvEl))
   strokeStarts <- return $ DASetStroking True <$ domEvent Mousedown cEl
 
-  -- stokeEnds  <- performEvent (ffor (leftmost [domEvent Mousedown  cEl
-  --                                            ,domEvent Mouseleave cEl]) $
-  --                             \_ -> liftIO 
   strokeEnds <- return $ DASetStroking False <$
                            leftmost [() <$ domEvent Mouseup    cEl
                                     ,domEvent Mouseleave cEl]
@@ -156,7 +170,8 @@ drawingArea cfg = mdo
 
   -- display state
 
-  return  (DrawingArea cEl pixels)
+  s <- mapDyn _dasStrokes state
+  return  (DrawingArea cEl s pixels)
 
 getMouseEventCoords' :: EventM e MouseEvent (Int,Int)
 getMouseEventCoords' = do
@@ -171,15 +186,14 @@ getTimedMouseEventCoords' = do
   (x,y) <- bisequence (getClientX e, getClientY e)
   return $ TC t x y
 
-
-relativeCoords :: MonadWidget t m => El t -> m (Dynamic t (Maybe (Double,Double)))
+relativeCoords :: MonadWidget t m => El t -> m (Dynamic t (Maybe TimedCoord))
 relativeCoords el = do
-
   let moveFunc (x,y) = do
+        now <- liftIO getCurrentTime
         Just cr <- getBoundingClientRect (_el_element el)
         t <- fmap floor (getTop cr)
         l <- fmap floor (getLeft cr)
-        return $ Just (fromIntegral $ x - l, fromIntegral $ y - t)
+        return $ Just (TC now (fromIntegral $ x - l) (fromIntegral $ y - t))
   p <- performEvent $ leftmost [return Nothing <$ domEvent Mouseleave el
                                , (fmap moveFunc (domEvent Mousemove el))]
   holdDyn Nothing p
@@ -229,10 +243,11 @@ redraw ctx canv das = do
   save ctx
   t <- getCurrentTime
   unless (Nothing == _dasCurrentBuffer das) $ putImageData ctx (_dasCurrentBuffer das) 0 0
-  forM_ (Prelude.zip (_dasCurrentStroke das) (Prelude.tail $ _dasCurrentStroke das)) $ \(TC hT hX hY, TC hT' hX' hY') -> do
+  forM_ (Prelude.zip (_dasCurrentStroke das) (Prelude.tail $ _dasCurrentStroke das))
+    $ \(TC hT hX hY, TC hT' hX' hY') -> do
       beginPath ctx
       moveTo ctx (fromIntegral hX) (fromIntegral hY)
-      let h = floor . (* 255) . (+ 0.5) . (/ 2) . sin . (2*pi *) $ realToFrac (diffUTCTime t hT)
+      let h = floor . (* 255) . (^4) . (+ 0.75) . (/ 4) . sin . (2*pi *) $ realToFrac (diffUTCTime t hT)
           c = "hsla(" ++ show h ++ ",50%,45%,1)"
       setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
       lineTo ctx (fromIntegral hX') (fromIntegral hY')
@@ -241,12 +256,48 @@ redraw ctx canv das = do
   restore ctx
 
 
-main :: IO ()
-main = mainWidget $ mdo
-  pb <- getPostBuild
-  text "test"
-  -- da <- drawingArea (defDAC & _drawingAreaConfig_clear .~ pb)
+type Result = [[TimedCoord]]
+
+
+question :: MonadWidget t m
+         => (Assignment, StimulusSequence, StimSeqItem)
+         -> m (Dynamic t Result)
+question (asgn, stimseq, ssi) = do
   da <- drawingArea defDAC
-  coords <- relativeCoords (_drawingArea_el da)
-  display coords
-  return ()
+  case ssiStimulus ssi of
+    A.String picUrl -> do
+      elAttr "img" ("src" =: T.unpack picUrl) fin
+    _ -> text "Unable to fetch stimulus image"
+  return $ _drawingArea_strokes da
+
+
+interactionWidget :: forall t m.MonadWidget t m => m ()
+interactionWidget = mdo
+  pb <- getPostBuild
+
+  let requestTriggers = leftmost [pb, () <$ sendResult]
+  assignments <- getAndDecode ("/api/fullposinfo" <$ requestTriggers)
+  da <- widgetHold (drawingArea defDAC >>= \d -> text "No image" >> return (_drawingArea_strokes d))
+                   (fmap question (fmapMaybe id assignments))
+
+  sendResult <- performRequestAsync $
+    ffor (updated (joinDyn da)) $ \r ->
+      XhrRequest "POST" "/api/response?advance" $
+      XhrRequestConfig ("Content-Type" =: "application/json")
+      Nothing Nothing Nothing (Just . BSL.unpack $ A.encode
+                              (ResponsePayload (A.toJSON r)))
+
+  fin
+
+
+main :: IO ()
+main = mainWidget interactionWidget
+
+main' :: IO ()
+main' = mainWidget $ do
+  da <- drawingArea defDAC
+  fin
+
+
+fin :: MonadWidget t m => m ()
+fin = return ()
