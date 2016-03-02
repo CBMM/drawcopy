@@ -61,8 +61,8 @@ data DrawingArea t = DrawingArea
   , _drawingArea_image   :: Event t ImageData }
 
 canvH, canvW :: Int
-canvW = 400
-canvH = 320
+canvW = 200
+canvH = 200
 
 data TimedCoord = TC !UTCTime !Int !Int
   deriving (Eq, Show)
@@ -125,6 +125,8 @@ drawingAreaUpdate (DASetBackground b) d =
 
 drawingArea :: MonadWidget t m => DrawingAreaConfig t -> m (DrawingArea t)
 drawingArea cfg = mdo
+
+  pb <- getPostBuild
 
   (cEl,_) <- elAttr' "canvas" ("id" =: "canvas"
                       <> "width"  =: show canvW
@@ -242,7 +244,9 @@ redraw :: CanvasRenderingContext2D
 redraw ctx canv das = do
   save ctx
   t <- getCurrentTime
-  unless (Nothing == _dasCurrentBuffer das) $ putImageData ctx (_dasCurrentBuffer das) 0 0
+  case _dasCurrentBuffer das of
+    Just _  -> putImageData ctx (_dasCurrentBuffer das) 0 0
+    Nothing -> clearArea ctx canv
   forM_ (Prelude.zip (_dasCurrentStroke das) (Prelude.tail $ _dasCurrentStroke das))
     $ \(TC hT hX hY, TC hT' hX' hY') -> do
       beginPath ctx
@@ -262,17 +266,20 @@ type Result = [[TimedCoord]]
 question :: MonadWidget t m
          => (Assignment, StimulusSequence, StimSeqItem)
          -> m (Dynamic t Result)
-question (asgn, stimseq, ssi) = do
-  da <- drawingArea defDAC
+question (asgn, stimseq, ssi) = elAttr "div" ("class" =: "question") $ do
+  da <- elClass "div" "drawing-area" $ do
+    el "p" $ text "Your Copy"
+    drawingArea defDAC
   case ssiStimulus ssi of
-    A.String picUrl -> do
+    A.String picUrl -> el "div" $ do
+      el "p" $ text "Goal Picture"
       elAttr "img" ("src" =: T.unpack picUrl) fin
     _ -> text "Unable to fetch stimulus image"
   return $ _drawingArea_strokes da
 
 
 interactionWidget :: forall t m.MonadWidget t m => m ()
-interactionWidget = mdo
+interactionWidget = elAttr "div" ("class" =: "interaction") $ mdo
   pb <- getPostBuild
 
   let requestTriggers = leftmost [pb, () <$ sendResult]
