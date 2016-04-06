@@ -1,6 +1,6 @@
 { mkDerivation, aeson, base, bifunctors, bytestring, ghcjs-base
 , ghcjs-dom, lens, mtl, mwc-random, random, reflex, reflex-dom
-, stdenv, tagging-common, text, time, transformers
+, stdenv, string-qq, tagging-common, text, time, transformers
 }:
 mkDerivation {
   pname = "drawcopy";
@@ -10,7 +10,7 @@ mkDerivation {
   isExecutable = true;
   executableHaskellDepends = [
     aeson base bifunctors bytestring ghcjs-base ghcjs-dom lens mtl
-    mwc-random random reflex reflex-dom tagging-common text time
+    mwc-random random reflex reflex-dom string-qq tagging-common text time
     transformers
   ];
   license = stdenv.lib.licenses.bsd3;
