@@ -1,4 +1,4 @@
-{ mkDerivation, aeson, base, bifunctors, bytestring, ghcjs-base
+{ mkDerivation, aeson, aeson-pretty, base, bifunctors, bytestring, ghcjs-base
 , ghcjs-dom, lens, mtl, mwc-random, random, reflex, reflex-dom
 , stdenv, string-qq, tagging-common, text, time, transformers
 }:
@@ -9,7 +9,7 @@ mkDerivation {
   isLibrary = false;
   isExecutable = true;
   executableHaskellDepends = [
-    aeson base bifunctors bytestring ghcjs-base ghcjs-dom lens mtl
+    aeson aeson-pretty base bifunctors bytestring ghcjs-base ghcjs-dom lens mtl
     mwc-random random reflex reflex-dom string-qq tagging-common text time
     transformers
   ];

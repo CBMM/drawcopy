@@ -1,10 +1,13 @@
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE GADTs               #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE RecursiveDo         #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections       #-}
+{-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE QuasiQuotes         #-}
 
 module Main where
@@ -18,25 +21,28 @@ import           Control.Monad.Trans (liftIO)
 import           Control.Monad (liftM, liftM2, mzero, unless, when)
 import           Control.Monad.IO.Class
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Types as A
+import qualified Data.Aeson.Encode.Pretty as A
 import           Data.Bitraversable (bisequence)
 import           Data.Bool (bool)
-import           Data.ByteString.Char8 hiding (filter, null, map, reverse, take, tail, head)
+import           Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as BSL
+import           Data.Char (toLower)
 import           Data.Foldable hiding (filter, null, foldl')
 import           Data.Traversable hiding (filter, null)
 import qualified Data.Map as Map
 import           Data.Maybe (catMaybes)
 import           Data.String.QQ
 import           Data.Time
-import           Data.JSString hiding (filter, null, foldl', map, reverse, take, tail, head)
+import           Data.JSString (JSString, pack)
 import           Data.Monoid ((<>))
 import qualified Data.Text as T
+import           GHC.Generics
 import           GHC.Int
 import           GHCJS.DOM
 import           GHCJS.DOM.CanvasRenderingContext2D
 import           GHCJS.DOM.ClientRect
--- import           GHCJS.DOM.Document hiding (error)
-import           GHCJS.DOM.Element hiding (error)
+import           GHCJS.DOM.Element (getBoundingClientRect, touchStart, mouseDown, mouseMove, touchEnd, touchMove, mouseUp)
 import           GHCJS.DOM.Enums
 import           GHCJS.DOM.EventM
 import           GHCJS.DOM.HTMLCanvasElement
@@ -141,9 +147,7 @@ drawingAreaUpdate (DASetStroking False) d = -- Nothing) d =    -- Unclick
     , _dasStrokes      =  _dasCurrentStroke d ++ _dasStrokes d
     }
 drawingAreaUpdate (DAMakePoint p) d =
-  -- d { _dasCurrentStroke = p : _dasCurrentStroke d }
   d { _dasCurrentStroke = (p : head (_dasCurrentStroke d)) : tail (_dasCurrentStroke d) }
-  -- d { _dasCurrentStroke = Map.adjust (p:) 0 (_dasCurrentStroke d) } -- TODO 0 is a magic number ('TouchId' for mouse events)
 drawingAreaUpdate (DASetBackground b) d =
   d { _dasCurrentBuffer = Just b }
 drawingAreaUpdate (DAOverwriteCurrentStrokes cur) d =
@@ -284,13 +288,13 @@ drawingArea cfg = mdo
   touches <- widgetTouches cEl
   dynText =<< holdDyn "No text" (show <$> _widgetTouches_touchStarts touches)
 
-  el "br" $ fin
-  text "N current: "
-  display =<< mapDyn Map.size (_widgetTouches_currentStrokes touches)
+  -- el "br" $ fin
+  -- text "N current: "
+  -- display =<< mapDyn Map.size (_widgetTouches_currentStrokes touches)
 
-  el "br" $ fin
-  text "Finished:"
-  display (_widgetTouches_finishedStrokes touches)
+  -- el "br" $ fin
+  -- text "Finished:"
+  -- display (_widgetTouches_finishedStrokes touches)
   -- performEvent_ ((liftIO . print) <$> _widgetTouches_touchStarts touches)
 
   placeTime <- relativeCoords cEl
@@ -313,8 +317,10 @@ drawingArea cfg = mdo
     performEvent (ffor (tag (current state) strokeEnds) $ \s ->
     liftIO (recomputeBackground ctx canvEl s))
 
-  let curStrokeOverwrites = fmap (DAOverwriteCurrentStrokes . Map.elems ) (updated $ _widgetTouches_currentStrokes touches)
-  let oldStrokeOverwrites = fmap (DAOverwriteOldStrokes . Map.elems) (updated $ _widgetTouches_finishedStrokes touches)
+  let curStrokeOverwrites = fmap (DAOverwriteCurrentStrokes . Map.elems )
+                            (updated $ _widgetTouches_currentStrokes touches)
+  let oldStrokeOverwrites = fmap (DAOverwriteOldStrokes . Map.elems)
+                            (updated $ _widgetTouches_finishedStrokes touches)
 
   state <- foldDyn drawingAreaUpdate das0
            (leftmost [points, strokeStarts, strokeEnds, backgroundUpdates, curStrokeOverwrites, oldStrokeOverwrites])
@@ -422,44 +428,48 @@ redraw ctx canv das = do
 type Result = [[TimedCoord]]
 
 
-question :: MonadWidget t m
-         => (Assignment, StimulusSequence, StimSeqItem)
-         -> m (Dynamic t Result)
-question (asgn, stimseq, ssi) = elAttr "div" ("class" =: "question") $ do
+questionTagging :: MonadWidget t m
+                => (Assignment, StimulusSequence, StimSeqItem)
+                -> m (Dynamic t Result)
+questionTagging (asgn, stimseq, ssi) = do
+  case ssiStimulus ssi of
+    A.String picUrl -> do
+      el "div" $ question (constDyn $ T.unpack picUrl)
+    _ -> text "Unable to fetch stimulus image" >> return (constDyn [])
+
+question :: MonadWidget t m => Dynamic t String -> m (Dynamic t [[TimedCoord]])
+question imgUrl = elAttr "div" ("class" =: "question") $ do
   da <- elClass "div" "drawing-area" $ do
     el "p" $ text "Your Copy"
     drawingArea defDAC
-  case ssiStimulus ssi of
-    A.String picUrl -> el "div" $ do
-      el "p" $ text "Goal Picture"
-      elAttr "img" ("src" =: T.unpack picUrl) fin
-    _ -> text "Unable to fetch stimulus image"
+  el "div" $ do
+    el "p" $ text "Goal Picture"
+    imgAttrs <- mapDyn (\i -> "class" =: "goal-img" <> "src" =: i) imgUrl
+    elDynAttr "img" imgAttrs fin
   return $ _drawingArea_strokes da
 
+-- taggingInteractionWidget :: forall t m.MonadWidget t m => m ()
+-- taggingInteractionWidget = elAttr "div" ("class" =: "interaction") $ mdo
+--   pb <- getPostBuild
 
-interactionWidget :: forall t m.MonadWidget t m => m ()
-interactionWidget = elAttr "div" ("class" =: "interaction") $ mdo
-  pb <- getPostBuild
+--   let requestTriggers = leftmost [pb, () <$ sendResult]
+--   assignments <- getAndDecode ("/api/fullposinfo" <$ requestTriggers)
+--   da <- widgetHold (drawingArea defDAC >>= \d -> text "No image" >> return (_drawingArea_strokes d))
+--                    (fmap question (fmapMaybe id assignments))
 
-  let requestTriggers = leftmost [pb, () <$ sendResult]
-  assignments <- getAndDecode ("/api/fullposinfo" <$ requestTriggers)
-  da <- widgetHold (drawingArea defDAC >>= \d -> text "No image" >> return (_drawingArea_strokes d))
-                   (fmap question (fmapMaybe id assignments))
+--   submits <- button "Send"
+--   sendResult <- performRequestAsync $
+--     ffor (tag (current $ joinDyn da) submits) $ \(r :: Result) ->
+--       XhrRequest "POST" "/api/response?advance" $
+--       XhrRequestConfig ("Content-Type" =: "application/json")
+--       Nothing Nothing Nothing (Just . BSL.unpack $ A.encode
+--                               (ResponsePayload (A.toJSON r)))
 
-  submits <- button "Send"
-  sendResult <- performRequestAsync $
-    ffor (tag (current $ joinDyn da) submits) $ \(r :: Result) ->
-      XhrRequest "POST" "/api/response?advance" $
-      XhrRequestConfig ("Content-Type" =: "application/json")
-      Nothing Nothing Nothing (Just . BSL.unpack $ A.encode
-                              (ResponsePayload (A.toJSON r)))
-
-  fin
+--   fin
 
 
--- Real main
-taggingMain :: IO ()
-taggingMain = mainWidget interactionWidget
+-- taggingMain :: IO ()
+-- taggingMain = mainWidget interactionWidget
 
 -----------------------------------------------------
 -- Custom trial & result types for standalone mode --
@@ -476,12 +486,49 @@ data Response = Response
   , _rStartTime :: UTCTime
   , _rEndTime   :: UTCTime
   , _rStrokes   :: [[TimedCoord]]
-  }
+  } deriving (Show, Generic)
+
+instance A.ToJSON Response where
+  toJSON = A.genericToJSON
+           A.defaultOptions { A.fieldLabelModifier = fmap toLower . drop 2}
 
 main :: IO ()
-main = mainWidgetWithHead appHead $ do
+main = mainWidgetWithHead appHead $ mdo
+  t0 <- liftIO getCurrentTime
   showSettings <- toggle True =<< bootstrapButton "cog"
-  elClass "div" "settings" $ settings showSettings
+  picIndex <- foldDyn ($) 0 $
+              leftmost [ const 0 <$ updated (_esPicSrcs es)
+                       , succ    <$ submits
+                       ]
+  es <- elClass "div" "settings" $ settings showSettings
+
+  stimTime <- holdDyn t0 =<< performEvent (liftIO getCurrentTime <$ updated picIndex)
+
+  stimulus <- combineDyn (\i srcs -> if length srcs > 0
+                                     then srcs !! mod i (length srcs)
+                                     else "")
+                         picIndex
+                         (_esPicSrcs es)
+
+  strokes  <- question stimulus
+
+  trialMetadata <- $(qDyn [| ( $(unqDyn [| _esSubject es |]),
+                               $(unqDyn [| stimulus      |]),
+                               $(unqDyn [| stimTime      |]),
+                               $(unqDyn [| strokes       |]))
+                           |])
+
+  submitClicks <- button "Submit"
+  submits <- performEvent
+    (ffor (tag (current trialMetadata) submitClicks) $ \(subj,stm,tStm,strk) -> do
+        tNow <- liftIO getCurrentTime
+        return $ Response subj stm tStm tNow strk
+    )
+
+  responses <- foldDyn (:) [] submits
+  display responses
+
+
   return ()
 
 settings :: MonadWidget t m => Dynamic t Bool -> m (ExperimentState t)
@@ -494,16 +541,20 @@ settings vis = do
 
       el "br" fin
       pics <- bootstrapLabeledInput "Images" "images"
-              (\a -> value <$> textArea (def & attributes .~ constDyn a))
+              (\a -> value <$> textArea (def & attributes .~ constDyn a & textAreaConfig_initialValue .~ defaultPics))
       pics' <- mapDyn Prelude.lines pics
       return $ ExperimentState nm pics'
     elClass "div" "settings-preview" $
       dyn =<< (forDyn (_esPicSrcs es) $ \pics ->
-                (forM_  pics (\src -> elAttr
-                                 "img" ("class" =: "preview-pic" <> "src" =: src)
-                                 fin)
-                ))
+                (forM_  pics
+                 (\src -> elAttr
+                          "img" ("class" =: "preview-pic" <> "src" =: src)
+                          fin)))
     return es
+
+showResults :: MonadWidget t m => [Response] -> m ()
+showResults resps = do
+  elClass "pre" "results" $ text (BSL.unpack (A.encode resps))
 
 main' :: IO ()
 main' = mainWidgetWithHead appHead $ do
@@ -564,5 +615,16 @@ appStyle = [s|
 
 textarea { resize: vertical; }
 
+.preview-pic {
+  height: 40px;
+  margin: 4px;
+}
+
 .
 |]
+
+defaultPics :: String
+defaultPics = unlines
+  [ "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character01/0709_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character02/0710_01.png"
+  ]
