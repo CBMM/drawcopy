@@ -184,17 +184,13 @@ widgetTouches :: MonadWidget t m => El t -> m (WidgetTouches t)
 widgetTouches el = do
 
   let e = _el_element el
-  -- TODO: We should refresh x0 and y0 on every event, in case the div moves
-  (x0,y0) :: (Int,Int) <- (liftIO $ getBoundingClientRect e) >>= \case
-    Nothing -> error "Error"
-    Just br -> liftM2 (,) (floor <$> getTop br) (floor <$> getLeft br)
 
-  starts      <- wrapDomEvent e (`on` touchStart) (cbStartOrEnd x0 y0)
-  mousestarts <- wrapDomEvent e (`on` mouseDown)  (mouseHandler x0 y0)
-  moves       <- wrapDomEvent e (`on` touchMove)  (cbStartOrEnd x0 y0)
-  mousemoves  <- wrapDomEvent e (`on` mouseMove)  (mouseHandler x0 y0)
-  ends        <- wrapDomEvent e (`on` touchEnd)   (cbStartOrEnd x0 y0)
-  mouseends   <- wrapDomEvent e (`on` mouseUp)    (mouseHandler x0 y0)
+  starts      <- wrapDomEvent e (`on` touchStart) (cbStartOrEnd e)
+  mousestarts <- wrapDomEvent e (`on` mouseDown)  (mouseHandler e)
+  moves       <- wrapDomEvent e (`on` touchMove)  (cbStartOrEnd e)
+  mousemoves  <- wrapDomEvent e (`on` mouseMove)  (mouseHandler e)
+  ends        <- wrapDomEvent e (`on` touchEnd)   (cbStartOrEnd e)
+  mouseends   <- wrapDomEvent e (`on` mouseUp)    (mouseHandler e)
 
   mouseisdown <- holdDyn False (leftmost [True <$ mousestarts, False <$ mouseends])
 
@@ -214,17 +210,23 @@ widgetTouches el = do
   return $ WidgetTouches starts moves ends currents finisheds
 
   where
-    cbStartOrEnd :: Int -> Int -> EventM e Touch.TouchEvent (Map.Map TouchId TimedCoord)
-    cbStartOrEnd x0 y0 = do
+    cbStartOrEnd :: Element -> EventM e Touch.TouchEvent (Map.Map TouchId TimedCoord)
+    cbStartOrEnd clientEl = do
       preventDefault
       e <- event
+      Just cr <- getBoundingClientRect clientEl
+      x0 <- floor <$> getLeft cr
+      y0 <- floor <$> getTop  cr
       Just tl <- liftIO $ Touch.getChangedTouches e
       liftIO $ touchListToTCMap x0 y0 tl
 
-    mouseHandler :: Int -> Int -> EventM e MouseEvent (Map.Map TouchId TimedCoord)
-    mouseHandler x0 y0 = do
+    mouseHandler :: Element -> EventM e MouseEvent (Map.Map TouchId TimedCoord)
+    mouseHandler clientEl = do
       preventDefault
       e <- event
+      Just cr <- getBoundingClientRect clientEl
+      x0 <- floor <$> getLeft cr
+      y0 <- floor <$> getTop  cr
       t <- liftIO getCurrentTime
       (x,y) <- bisequence (getClientX e, getClientY e)
       return $ 0 =: TC t (x - x0) (y - y0)
@@ -266,7 +268,12 @@ touchCoord touch = do
   return $ TC t x y
 
 touchRelCoord :: Int -> Int -> Touch -> IO TimedCoord
-touchRelCoord x0 y0 tch = relativizedCoord x0 y0 <$> touchCoord tch
+touchRelCoord x0 y0 tch = do
+  -- Just targ <- Touch.getTarget tch
+  -- Just brect <- getBoundingClientRect targ
+  -- x0 <- floor <$> getClientX brect
+  -- y0 <- floor <$> getClientY brect
+  relativizedCoord x0 y0 <$> touchCoord tch
 
 
 drawingArea :: MonadWidget t m => DrawingAreaConfig t -> m (DrawingArea t)
@@ -286,7 +293,7 @@ drawingArea cfg = mdo
   pixels <- performEvent (liftIO (getCanvasBuffer ctx canvEl) <$ _drawingAreaConfig_send cfg)
 
   touches <- widgetTouches cEl
-  dynText =<< holdDyn "No text" (show <$> _widgetTouches_touchStarts touches)
+  -- dynText =<< holdDyn "No text" (show <$> _widgetTouches_touchStarts touches)
 
   -- el "br" $ fin
   -- text "N current: "
