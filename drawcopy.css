@@ -26,10 +26,6 @@ p {
 }
 
 .question div img {
-  height: 200px;
-  min-height: 200px;
-  width: 200px;
-  min-width: 200px;
   box-shadow: 0px 5px 10px rgba(0,0,0,0.25);
 }
 
@@ -37,10 +33,6 @@ p {
 }
 
 .question div canvas{
-   height: 200px;
-   min-height: 200px;
-   width: 200px;
-   min-width:200px;
    box-shadow: 0px 5px 10px rgba(0,0,0,0.25); 
 }
 

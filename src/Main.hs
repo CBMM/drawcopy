@@ -42,12 +42,14 @@ import           GHC.Int
 import           GHCJS.DOM
 import           GHCJS.DOM.CanvasRenderingContext2D
 import           GHCJS.DOM.ClientRect
-import           GHCJS.DOM.Element (getBoundingClientRect, touchStart, mouseDown, mouseMove, touchEnd, touchMove, mouseUp)
+import           GHCJS.DOM.Element (getBoundingClientRect, touchStart, mouseDown,
+                                    mouseMove, touchEnd, touchMove, mouseUp,focus)
 import           GHCJS.DOM.Enums
 import           GHCJS.DOM.EventM
 import           GHCJS.DOM.HTMLCanvasElement
 import           GHCJS.DOM.HTMLDocument
 import           GHCJS.DOM.HTMLElement
+import           GHCJS.DOM.HTMLTextAreaElement (select)
 import           GHCJS.Marshal (fromJSVal)
 import           GHCJS.DOM.MouseEvent
 import qualified GHCJS.DOM.Touch      as Touch
@@ -55,8 +57,8 @@ import qualified GHCJS.DOM.TouchEvent as Touch
 import qualified GHCJS.DOM.TouchList  as Touch
 import           GHCJS.DOM.Types hiding (Event)
 import           GHCJS.Types (jsval)
-import           Reflex
-import           Reflex.Dom hiding (restore)
+import           Reflex hiding (select)
+import           Reflex.Dom hiding (restore, select)
 import           System.Random (StdGen, getStdGen)
 import           System.Random.MWC hiding (restore, save)
 -------------------------------------------------------------------------------
@@ -83,8 +85,8 @@ data DrawingArea t = DrawingArea
   , _drawingArea_image   :: Event t ImageData }
 
 canvH, canvW :: Int
-canvW = 200
-canvH = 200
+canvW = 300
+canvH = 300
 
 data TimedCoord = TC !UTCTime !Int !Int
   deriving (Eq, Show)
@@ -102,67 +104,6 @@ instance A.FromJSON TimedCoord where
                               <*> o A..: "y"
   parseJSON _            = mzero
 
-data DrawingAreaState = DAState
-  { -- _dasCurrentBuffer :: Maybe ImageData
-    _dasCanUndo       :: Bool
-  , _dasCurrentStroke :: [[TimedCoord]]
-  , _dasStrokes       :: [[TimedCoord]]
-  , _dasUndoneStrokes :: [[TimedCoord]]
-  , _dasStroking      :: Bool
-  }
-
-instance Show DrawingAreaState where
-  show das = show $ _dasStrokes das
-
-das0 :: DrawingAreaState
-das0 = DAState False [] [] [] False
-
-data DrawingAreaUpdate = DAMakePoint TimedCoord
-                         -- ^ Add a timestamped point to the current stroke
-                       | DAUndo
-                         -- ^ Undo the last stroke
-                         -- | DASetStroking (Maybe ImageData)
-                       | DASetStroking Bool
-                         -- ^ Start a new stroke (Just rasterize)
-                         --   or end the current one (Nothing)
- --                       | DASetBackground ImageData
-                       | DAOverwriteCurrentStrokes [[TimedCoord]]
-                       | DAAppendToOldStrokes [[TimedCoord]]
-
-instance Show DrawingAreaUpdate where
-  show (DAMakePoint tc) = "DAMakePoint " ++ show tc
-  show (DAUndo) = "DAUndo"
-  show (DASetStroking b) = "DASetStroking " ++ show b
---  show (DASetBackground _) = "DASetBackground <image>"
-  show (DAOverwriteCurrentStrokes tc) = "DAOverwriteCurrentStrokes " ++ show tc
-  show (DAAppendToOldStrokes tc) = "DAAppendToOldStrokes " ++ show tc
-
-drawingAreaUpdate :: DrawingAreaUpdate -> DrawingAreaState -> DrawingAreaState
-drawingAreaUpdate DAUndo d =
-  if   _dasStroking d || not (_dasCanUndo d) then d -- Ignore UNDO mid-stroke
-  else d { _dasCanUndo       = False
-         , _dasStrokes       = strokes'
-         , _dasUndoneStrokes = unstrokes' }
-  where
-    (strokes', unstrokes') = case _dasStrokes d of
-      []     -> ([], _dasUndoneStrokes d)
-      (x:xs) -> (xs, x : _dasUndoneStrokes d)
-drawingAreaUpdate (DASetStroking True) d = -- (Just b))  d =  -- Click
-  d { _dasStroking      = True }
-drawingAreaUpdate (DASetStroking False) d = -- Nothing) d =    -- Unclick
-  d { _dasCurrentStroke = []
-    , _dasStroking      = False
-    , _dasStrokes      =  _dasCurrentStroke d ++ _dasStrokes d
-    }
-drawingAreaUpdate (DAMakePoint p) d =
-  d { _dasCurrentStroke = (p : head (_dasCurrentStroke d)) : tail (_dasCurrentStroke d) }
--- drawingAreaUpdate (DASetBackground b) d =
---   d { _dasCurrentBuffer = Just b }
-drawingAreaUpdate (DAOverwriteCurrentStrokes cur) d =
-  d { _dasCurrentStroke = cur }
-drawingAreaUpdate (DAAppendToOldStrokes old) d =
-  d { _dasStrokes = _dasStrokes d ++ old }
-
 type TouchId = Word
 
 data WidgetTouches t = WidgetTouches
@@ -170,7 +111,7 @@ data WidgetTouches t = WidgetTouches
   , _widgetTouches_touchMoves      :: Event   t (Map.Map TouchId TimedCoord)
   , _widgetTouches_touchEnds       :: Event   t (Map.Map TouchId TimedCoord)
   , _widgetTouches_currentStrokes  :: Dynamic t (Map.Map TouchId [TimedCoord])
-  , _widgetTouches_finishedStrokes :: Dynamic t (Map.Map TouchId [TimedCoord])
+  , _widgetTouches_finishedStrokes :: Dynamic t [[TimedCoord]]
   }
 
 
@@ -246,37 +187,23 @@ widgetTouches el clears = do
     touchListToTCMap x0 y0 tl = mapM (touchRelCoord x0 y0) =<< touchListToMap tl
 
     modifyStrokes :: (PointAction, Map.Map TouchId TimedCoord)
-                  -> (Map.Map TouchId [TimedCoord], Map.Map TouchId [TimedCoord])
-                  -> (Map.Map TouchId [TimedCoord], Map.Map TouchId [TimedCoord])
+                  -> (Map.Map TouchId [TimedCoord], [[TimedCoord]])
+                  -> (Map.Map TouchId [TimedCoord], [[TimedCoord]])
     modifyStrokes (PointsStart, new) (cur, old) =
       (Map.union (fmap (:[]) new) cur, old)
     modifyStrokes (PointsEnd, del) (cur, old) =
       let delEntries :: Map.Map TouchId [TimedCoord] = Map.filterWithKey (\k _ -> Map.member k del) cur
-          insEntries :: Map.Map TouchId [TimedCoord] = fmap reverse delEntries
-      in  (Map.difference cur delEntries, Map.union insEntries old)
+          insEntries :: [[TimedCoord]] = Map.elems $ fmap reverse delEntries
+      in  (Map.difference cur delEntries, old ++ insEntries)
     modifyStrokes (PointsMove, new) (cur,old) =
       let cur' = Map.unionWith (++) (fmap (:[]) new) cur
       in  (cur', old)
     modifyStrokes (PointsClear, _) (cur, _) = (cur, mempty)
 
 
-relativizedCoord :: Int -> Int -> TimedCoord -> TimedCoord
-relativizedCoord x0 y0 (TC t x y) =
-  TC t (x - x0) (y - y0)
 
-touchCoord :: Touch -> IO TimedCoord
-touchCoord touch = do
-  t <- getCurrentTime
-  (x,y) <- bisequence (Touch.getClientX touch, Touch.getClientY touch)
-  return $ TC t x y
-
-touchRelCoord :: Int -> Int -> Touch -> IO TimedCoord
-touchRelCoord x0 y0 tch = do
-  relativizedCoord x0 y0 <$> touchCoord tch
-
-
-drawingArea :: MonadWidget t m => DrawingAreaConfig t -> m (DrawingArea t)
-drawingArea cfg = mdo
+drawingArea :: MonadWidget t m => Event t () -> DrawingAreaConfig t -> m (DrawingArea t)
+drawingArea touchClears cfg = mdo
 
   pb <- getPostBuild
 
@@ -291,88 +218,46 @@ drawingArea cfg = mdo
 
   pixels <- performEvent (liftIO (getCanvasBuffer ctx canvEl) <$ _drawingAreaConfig_send cfg)
 
-  touches <- widgetTouches cEl never
-  -- dynText =<< holdDyn "No text" (show <$> _widgetTouches_touchStarts touches)
+  touches <- widgetTouches cEl touchClears
 
-  -- el "br" $ fin
-  -- text "N current: "
-  -- display =<< mapDyn Map.size (_widgetTouches_currentStrokes touches)
+  let s = _widgetTouches_finishedStrokes touches
 
-  -- el "br" $ fin
-  -- text "Finished:"
-  -- display (_widgetTouches_finishedStrokes touches)
-  -- performEvent_ ((liftIO . print) <$> _widgetTouches_touchStarts touches)
+  let strokeDone = updated s
 
-  -- placeTime <- relativeCoords cEl
+  redrawGuardOver <- delay 0.0001 strokeDone
+  redrawOk <- holdDyn True (leftmost [True <$ redrawGuardOver, False <$ strokeDone])
 
-  -- let dragPoints  = fmapMaybe id $ tag (current placeTime) (domEvent Mousemove cEl)
-
-  -- let firstPoints = fmapMaybe id $ tag (current placeTime) (domEvent Mousedown cEl)
-
-  -- let pointEvents    = leftmost [ dragPoints, firstPoints ]
-
-  -- let points = fmap DAMakePoint $ gate (_dasStroking <$> current state)pointEvents
-
-  -- strokeStarts <- return $ DASetStroking True <$ domEvent Mousedown cEl
-
-  -- strokeEnds <- return $ DASetStroking False <$
-  --                          leftmost [() <$ domEvent Mouseup    cEl
-  --                                   ,domEvent Mouseleave cEl]
-  -- undos <- never -- DAUndo <$ _drawingAreaConfig_undo cfg
-
-  -- backgroundUpdates <- (fmap.fmap) DASetBackground $
-  --   performEvent (ffor (tag (current state) oldStrokeOverwrites) $ \s ->
-  --   liftIO (recomputeBackground ctx canvEl s))
-  redrawGuardOver <- delay 0.0001 oldStrokeOverwrites
-  redrawOk <- holdDyn True (leftmost [True <$ redrawGuardOver, False <$ oldStrokeOverwrites])
-
-  backgroundUpdates <- performEvent (ffor (tag (current state) oldStrokeOverwrites) $ \s ->
-    liftIO (recomputeBackground ctx canvEl s))
+  bkgndDelay <- delay 0 strokeDone
+  backgroundUpdates <- performEvent (ffor (tag (current s) bkgndDelay) $ \strks ->
+    liftIO (recomputeBackground' ctx canvEl strks))
   background <- holdDyn Nothing $ fmap Just backgroundUpdates
 
-  let curStrokeOverwrites = fmap (DAOverwriteCurrentStrokes . Map.elems )
-                            (updated $ _widgetTouches_currentStrokes touches)
+  -- el "br" fin
 
-  let oldStrokeOverwrites = traceEvent "OldStrokeOverwrite" $ fmap (DAAppendToOldStrokes . Map.elems)
-                            (updated $ _widgetTouches_finishedStrokes touches)
+  -- text "CURRENT TOUCHES"
+  -- display ( _widgetTouches_currentStrokes touches)
 
-  state <- foldDyn drawingAreaUpdate das0 oldStrokeOverwrites
+  -- el "br" fin
 
---            (leftmost [points, strokeStarts, strokeEnds, curStrokeOverwrites, oldStrokeOverwrites])
---           (leftmost [points, strokeStarts, strokeEnds, curStrokeOverwrites, oldStrokeOverwrites])
---           (leftmost [points, strokeStarts, strokeEnds, backgroundUpdates, curStrokeOverwrites, oldStrokeOverwrites])
-
-  text "STATE"
-  display state
-
-  el "br" fin
-
-  text "CURRENT TOUCHES"
-  display ( _widgetTouches_currentStrokes touches)
-
-  el "br" fin
-
-  text "FINISHED TOUCHES"
-  display ( _widgetTouches_finishedStrokes touches )
+  -- text "FINISHED TOUCHES"
+  -- display ( _widgetTouches_finishedStrokes touches )
 
 
   tInit <- liftIO getCurrentTime
   ticks <- gate (current redrawOk) <$> tickLossy 0.03 tInit
 
-  -- performEvent_ (ffor (tag (current state) ticks) $ \s ->
-  --                 liftIO $ redraw ctx canvEl s)
-  -- performEvent_ (ffor (tag ((,) <$> current state <*> current background) ticks) $ \s ->
+  -- performEvent_ (ffor (tag ((,) <$> fmap Map.elems (current ( _widgetTouches_finishedStrokes touches)) <*> fmap Map.elems (current (_widgetTouches_currentStrokes touches))) ticks) $ \s ->
+  --                 liftIO $ redraw'' ctx canvEl s)
+  let -- redrawData :: Behavior t ([[TimedCoord]], Maybe ImageData)
+      redrawData = (,) <$> fmap Map.elems (current $ _widgetTouches_currentStrokes touches)
+                       <*> current background
+
+  performEvent_ $ ffor (tag redrawData ticks) (\s -> liftIO $ redraw' ctx canvEl s)
+  -- performEvent_ (ffor (tag ((,) <$> fmap Map.elems (current ( _widgetTouches_finishedStrokes touches)))
+  --                           <*> current background) ticks $ \s ->
   --                 liftIO $ redraw' ctx canvEl s)
-  performEvent_ (ffor (tag ((,) <$> fmap Map.elems (current ( _widgetTouches_finishedStrokes touches)) <*> fmap Map.elems (current (_widgetTouches_currentStrokes touches))) ticks) $ \s ->
-                  liftIO $ redraw'' ctx canvEl s)
 
-  -- performEvent_ (ffor (tag (current state) oldStrokeOverwrites) $ \s ->
-  --                 liftIO (recomputeBackground ctx canvEl s) >> return ())
-
-  -- display state
-
-  s <- mapDyn _dasStrokes state
-  return  (DrawingArea cEl s pixels)
+  return $ DrawingArea cEl s pixels
 
 getMouseEventCoords' :: EventM e MouseEvent (Int,Int)
 getMouseEventCoords' = do
@@ -415,16 +300,36 @@ clearArea ctx canv = do
   restore ctx
 
 
-recomputeBackground :: CanvasRenderingContext2D
-                    -> HTMLCanvasElement
-                    -> DrawingAreaState
-                    -> IO ImageData
-recomputeBackground ctx canv das = do
+-- recomputeBackground :: CanvasRenderingContext2D
+--                     -> HTMLCanvasElement
+--                     -> DrawingAreaState
+--                     -> IO ImageData
+-- recomputeBackground ctx canv das = do
+--   save ctx
+--   clearArea ctx canv
+--   let c = "hsla(100,50%,50%,1)"
+--   setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
+--   forM_ (filter (not . null) (_dasCurrentStroke das ++ _dasStrokes das)) $ \((TC hT hX hY):ps) -> do
+--     moveTo ctx (fromIntegral hX) (fromIntegral hY)
+--     forM_ ps $ \(TC t1 x1 y1) -> do
+--       lineTo ctx (fromIntegral x1) (fromIntegral y1)
+--     stroke ctx
+--   Just bs <- getImageData ctx 0 0 (realToFrac canvW) (realToFrac canvH)
+--     -- Data.ByteString.Char8.pack <$>
+--     -- toDataURL el el (Nothing :: Maybe String)
+--   restore ctx
+--   return bs
+
+recomputeBackground' :: CanvasRenderingContext2D
+                     -> HTMLCanvasElement
+                     -> [[TimedCoord]]
+                     -> IO ImageData
+recomputeBackground' ctx canv tc = do
   save ctx
   clearArea ctx canv
   let c = "hsla(100,50%,50%,1)"
   setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
-  forM_ (filter (not . null) (_dasCurrentStroke das ++ _dasStrokes das)) $ \((TC hT hX hY):ps) -> do
+  forM_ (filter (not . null) tc) $ \((TC hT hX hY):ps) -> do
     moveTo ctx (fromIntegral hX) (fromIntegral hY)
     forM_ ps $ \(TC t1 x1 y1) -> do
       lineTo ctx (fromIntegral x1) (fromIntegral y1)
@@ -436,18 +341,19 @@ recomputeBackground ctx canv das = do
   return bs
 
 
+
 redraw' :: CanvasRenderingContext2D
         -> HTMLCanvasElement
-        -> (DrawingAreaState, Maybe ImageData)
+        -> ([[TimedCoord]], Maybe ImageData)
         -> IO ()
-redraw' ctx canv (das,bkg) = do
+redraw' ctx canv (tc,bkg) = do
   save ctx
   t <- getCurrentTime
   case bkg of
     Just _  -> putImageData ctx bkg 0 0
     Nothing -> clearArea ctx canv
   -- TODO don't just take one
-  forM_ (_dasCurrentStroke das) $ \cs ->
+  forM_ tc $ \cs ->
     forM_ (Prelude.zip cs (Prelude.tail $ cs))
       $ \(TC hT hX hY , TC hT' hX' hY') -> do
         beginPath ctx
@@ -529,42 +435,19 @@ questionTagging :: MonadWidget t m
 questionTagging (asgn, stimseq, ssi) = do
   case ssiStimulus ssi of
     A.String picUrl -> do
-      el "div" $ question (constDyn $ T.unpack picUrl)
+      el "div" $ question (constDyn $ T.unpack picUrl) never
     _ -> text "Unable to fetch stimulus image" >> return (constDyn [])
 
-question :: MonadWidget t m => Dynamic t String -> m (Dynamic t [[TimedCoord]])
-question imgUrl = elAttr "div" ("class" =: "question") $ do
+question :: MonadWidget t m => Dynamic t String -> Event t () -> m (Dynamic t [[TimedCoord]])
+question imgUrl touchClears = elAttr "div" ("class" =: "question") $ do
   da <- elClass "div" "drawing-area" $ do
     el "p" $ text "Your Copy"
-    drawingArea defDAC
+    drawingArea touchClears defDAC
   el "div" $ do
     el "p" $ text "Goal Picture"
     imgAttrs <- mapDyn (\i -> "class" =: "goal-img" <> "src" =: i) imgUrl
     elDynAttr "img" imgAttrs fin
   return $ _drawingArea_strokes da
-
--- taggingInteractionWidget :: forall t m.MonadWidget t m => m ()
--- taggingInteractionWidget = elAttr "div" ("class" =: "interaction") $ mdo
---   pb <- getPostBuild
-
---   let requestTriggers = leftmost [pb, () <$ sendResult]
---   assignments <- getAndDecode ("/api/fullposinfo" <$ requestTriggers)
---   da <- widgetHold (drawingArea defDAC >>= \d -> text "No image" >> return (_drawingArea_strokes d))
---                    (fmap question (fmapMaybe id assignments))
-
---   submits <- button "Send"
---   sendResult <- performRequestAsync $
---     ffor (tag (current $ joinDyn da) submits) $ \(r :: Result) ->
---       XhrRequest "POST" "/api/response?advance" $
---       XhrRequestConfig ("Content-Type" =: "application/json")
---       Nothing Nothing Nothing (Just . BSL.unpack $ A.encode
---                               (ResponsePayload (A.toJSON r)))
-
---   fin
-
-
--- taggingMain :: IO ()
--- taggingMain = mainWidget interactionWidget
 
 -----------------------------------------------------
 -- Custom trial & result types for standalone mode --
@@ -587,10 +470,18 @@ instance A.ToJSON Response where
   toJSON = A.genericToJSON
            A.defaultOptions { A.fieldLabelModifier = fmap toLower . drop 2}
 
+instance A.FromJSON Response where
+  parseJSON = A.genericParseJSON
+              A.defaultOptions {A.fieldLabelModifier = fmap toLower . drop 2}
+
 main :: IO ()
 main = mainWidgetWithHead appHead $ mdo
   t0 <- liftIO getCurrentTime
   showSettings <- toggle True =<< bootstrapButton "cog"
+  showResults <- toggle False =<< bootstrapButton "th-list"
+  clearResults <- switchPromptly never =<< dyn =<<
+                  forDyn showResults (bool (return never) (responsesWidget responses))
+
   picIndex <- foldDyn ($) 0 $
               leftmost [ const 0 <$ updated (_esPicSrcs es)
                        , succ    <$ submits
@@ -605,7 +496,7 @@ main = mainWidgetWithHead appHead $ mdo
                          picIndex
                          (_esPicSrcs es)
 
-  strokes  <- question stimulus
+  strokes  <- question stimulus (() <$ submits)
 
   trialMetadata <- $(qDyn [| ( $(unqDyn [| _esSubject es |]),
                                $(unqDyn [| stimulus      |]),
@@ -620,9 +511,8 @@ main = mainWidgetWithHead appHead $ mdo
         return $ Response subj stm tStm tNow strk
     )
 
-  responses <- foldDyn (:) [] submits
-  display responses
-
+  -- responses <- foldDyn (:) [] submits
+  responses <- foldDyn ($) [] (leftmost [fmap (:) submits, const [] <$ clearResults])
 
   return ()
 
@@ -636,7 +526,8 @@ settings vis = do
 
       el "br" fin
       pics <- bootstrapLabeledInput "Images" "images"
-              (\a -> value <$> textArea (def & attributes .~ constDyn a & textAreaConfig_initialValue .~ defaultPics))
+              (\a -> value <$> textArea (def & attributes .~ constDyn ("id" =: "results" <> a)
+                                             & textAreaConfig_initialValue .~ defaultPics))
       pics' <- mapDyn Prelude.lines pics
       return $ ExperimentState nm pics'
     elClass "div" "settings-preview" $
@@ -647,20 +538,31 @@ settings vis = do
                           fin)))
     return es
 
-showResults :: MonadWidget t m => [Response] -> m ()
-showResults resps = do
-  elClass "pre" "results" $ text (BSL.unpack (A.encode resps))
+responsesWidget :: MonadWidget t m => Dynamic t [Response] -> m (Event t ())
+responsesWidget resps = divClass "responses" $ do
+  pb <- getPostBuild
+  rtext <- mapDyn (BSL.unpack . A.encodePretty) resps
 
-main' :: IO ()
-main' = mainWidgetWithHead appHead $ do
-  da <- drawingArea defDAC
-  fin
+  (sel',clear) <- divClass "results-buttons" $ do
+   sel <- elClass "button" "btn btn-large results-select" $ do
+     b <- bootstrapButton "screenshot"
+     text "Select all"
+     return b
+   clear <- elClass "button" "btn btn-large results-remove" $ do
+     b <- bootstrapButton "remove"
+     text "Reset results"
+     return b
+   return (sel,clear)
 
-main'' :: IO ()
-main'' = mainWidget $ text "Hello"
+  el "br" fin
+  sel <- delay 0.1 sel'
 
-fin :: MonadWidget t m => m ()
-fin = return ()
+  ta <- _textArea_element <$> textArea
+        (def & textAreaConfig_setValue .~ updated rtext)
+--         (def & textAreaConfig_setValue .~ tag (current rtext) pb)
+  performEvent_ ((liftIO (putStrLn "TEST") >> focus ta >> select ta) <$ leftmost [pb, () <$ updated rtext, sel])
+  return clear
+
 
 bootstrapButton :: MonadWidget t m => String -> m (Event t ())
 bootstrapButton glyphShortname = (domEvent Click . fst) <$>
@@ -711,22 +613,59 @@ appStyle = [s|
   width: 50%;
 }
 
-textarea { resize: vertical; }
+#images { resize: vertical; }
 
 .preview-pic {
   height: 40px;
   margin: 4px;
 }
 
-.
-|]
+|] ++ unlines [
+ ".question div canvas{"
+ , "  height: "     ++ show canvH ++ "px;"
+ , "  min-height: " ++ show canvH ++ "px;"
+ , "  max-height: " ++ show canvH ++ "px;"
+ , "  width: "      ++ show canvW ++ "px;"
+ , "  min-width: "  ++ show canvW ++ "px;"
+ , "  max-width: "  ++ show canvW ++ "px;"
+ ,"}\n\n"] ++ unlines [
+ ".question div img{"
+ , "  height: "     ++ show canvH ++ "px;"
+ , "  min-height: " ++ show canvH ++ "px;"
+ , "  max-height: " ++ show canvH ++ "px;"
+ , "  width: "      ++ show canvW ++ "px;"
+ , "  min-width: "  ++ show canvW ++ "px;"
+ , "  max-width: "  ++ show canvW ++ "px;"
+ ,"}"]
 
 defaultPics :: String
 defaultPics = unlines
   [ "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character01/0709_01.png"
   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character02/0710_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character03/0711_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character04/0712_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character05/0713_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character06/0714_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character07/0715_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character08/0716_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character09/0717_01.png"
+  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character10/0718_01.png"
   ]
 
+
+relativizedCoord :: Int -> Int -> TimedCoord -> TimedCoord
+relativizedCoord x0 y0 (TC t x y) =
+  TC t (x - x0) (y - y0)
+
+touchCoord :: Touch -> IO TimedCoord
+touchCoord touch = do
+  t <- getCurrentTime
+  (x,y) <- bisequence (Touch.getClientX touch, Touch.getClientY touch)
+  return $ TC t x y
+
+touchRelCoord :: Int -> Int -> Touch -> IO TimedCoord
+touchRelCoord x0 y0 tch = do
+  relativizedCoord x0 y0 <$> touchCoord tch
 
 
 
@@ -740,3 +679,100 @@ corner w = do
       left  <- fmap floor (getLeft b)
       return (top,left)
 
+
+-- data DrawingAreaState = DAState
+--   { -- _dasCurrentBuffer :: Maybe ImageData
+--     _dasCanUndo       :: Bool
+--   , _dasCurrentStroke :: [[TimedCoord]]
+--   , _dasStrokes       :: [[TimedCoord]]
+--   , _dasUndoneStrokes :: [[TimedCoord]]
+--   , _dasStroking      :: Bool
+--   }
+
+-- instance Show DrawingAreaState where
+--   show das = show $ _dasStrokes das
+
+-- das0 :: DrawingAreaState
+-- das0 = DAState False [] [] [] False
+
+-- data DrawingAreaUpdate = DAMakePoint TimedCoord
+--                          -- ^ Add a timestamped point to the current stroke
+--                        | DAUndo
+--                          -- ^ Undo the last stroke
+--                          -- | DASetStroking (Maybe ImageData)
+--                        | DASetStroking Bool
+--                          -- ^ Start a new stroke (Just rasterize)
+--                          --   or end the current one (Nothing)
+--  --                       | DASetBackground ImageData
+--                        | DAOverwriteCurrentStrokes [[TimedCoord]]
+--                        | DAAppendToOldStrokes [[TimedCoord]]
+
+-- instance Show DrawingAreaUpdate where
+--   show (DAMakePoint tc) = "DAMakePoint " ++ show tc
+--   show (DAUndo) = "DAUndo"
+--   show (DASetStroking b) = "DASetStroking " ++ show b
+-- --  show (DASetBackground _) = "DASetBackground <image>"
+--   show (DAOverwriteCurrentStrokes tc) = "DAOverwriteCurrentStrokes " ++ show tc
+--   show (DAAppendToOldStrokes tc) = "DAAppendToOldStrokes " ++ show tc
+
+-- drawingAreaUpdate :: DrawingAreaUpdate -> DrawingAreaState -> DrawingAreaState
+-- drawingAreaUpdate DAUndo d =
+--   if   _dasStroking d || not (_dasCanUndo d) then d -- Ignore UNDO mid-stroke
+--   else d { _dasCanUndo       = False
+--          , _dasStrokes       = strokes'
+--          , _dasUndoneStrokes = unstrokes' }
+--   where
+--     (strokes', unstrokes') = case _dasStrokes d of
+--       []     -> ([], _dasUndoneStrokes d)
+--       (x:xs) -> (xs, x : _dasUndoneStrokes d)
+-- drawingAreaUpdate (DASetStroking True) d = -- (Just b))  d =  -- Click
+--   d { _dasStroking      = True }
+-- drawingAreaUpdate (DASetStroking False) d = -- Nothing) d =    -- Unclick
+--   d { _dasCurrentStroke = []
+--     , _dasStroking      = False
+--     , _dasStrokes      =  _dasCurrentStroke d ++ _dasStrokes d
+--     }
+-- drawingAreaUpdate (DAMakePoint p) d =
+--   d { _dasCurrentStroke = (p : head (_dasCurrentStroke d)) : tail (_dasCurrentStroke d) }
+-- -- drawingAreaUpdate (DASetBackground b) d =
+-- --   d { _dasCurrentBuffer = Just b }
+-- drawingAreaUpdate (DAOverwriteCurrentStrokes cur) d =
+--   d { _dasCurrentStroke = cur }
+-- drawingAreaUpdate (DAAppendToOldStrokes old) d =
+--   d { _dasStrokes = _dasStrokes d ++ old }
+
+
+
+-- taggingInteractionWidget :: forall t m.MonadWidget t m => m ()
+-- taggingInteractionWidget = elAttr "div" ("class" =: "interaction") $ mdo
+--   pb <- getPostBuild
+
+--   let requestTriggers = leftmost [pb, () <$ sendResult]
+--   assignments <- getAndDecode ("/api/fullposinfo" <$ requestTriggers)
+--   da <- widgetHold (drawingArea defDAC >>= \d -> text "No image" >> return (_drawingArea_strokes d))
+--                    (fmap question (fmapMaybe id assignments))
+
+--   submits <- button "Send"
+--   sendResult <- performRequestAsync $
+--     ffor (tag (current $ joinDyn da) submits) $ \(r :: Result) ->
+--       XhrRequest "POST" "/api/response?advance" $
+--       XhrRequestConfig ("Content-Type" =: "application/json")
+--       Nothing Nothing Nothing (Just . BSL.unpack $ A.encode
+--                               (ResponsePayload (A.toJSON r)))
+
+--   fin
+
+
+-- taggingMain :: IO ()
+-- taggingMain = mainWidget interactionWidget
+
+main' :: IO ()
+main' = mainWidgetWithHead appHead $ do
+  da <- drawingArea never defDAC
+  fin
+
+main'' :: IO ()
+main'' = mainWidget $ text "Hello"
+
+fin :: MonadWidget t m => m ()
+fin = return ()
