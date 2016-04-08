@@ -103,8 +103,8 @@ instance A.FromJSON TimedCoord where
   parseJSON _            = mzero
 
 data DrawingAreaState = DAState
-  { _dasCurrentBuffer :: Maybe ImageData
-  , _dasCanUndo       :: Bool
+  { -- _dasCurrentBuffer :: Maybe ImageData
+    _dasCanUndo       :: Bool
   , _dasCurrentStroke :: [[TimedCoord]]
   , _dasStrokes       :: [[TimedCoord]]
   , _dasUndoneStrokes :: [[TimedCoord]]
@@ -115,7 +115,7 @@ instance Show DrawingAreaState where
   show das = show $ _dasStrokes das
 
 das0 :: DrawingAreaState
-das0 = DAState Nothing False [] [] [] False
+das0 = DAState False [] [] [] False
 
 data DrawingAreaUpdate = DAMakePoint TimedCoord
                          -- ^ Add a timestamped point to the current stroke
@@ -125,9 +125,17 @@ data DrawingAreaUpdate = DAMakePoint TimedCoord
                        | DASetStroking Bool
                          -- ^ Start a new stroke (Just rasterize)
                          --   or end the current one (Nothing)
-                       | DASetBackground ImageData
+ --                       | DASetBackground ImageData
                        | DAOverwriteCurrentStrokes [[TimedCoord]]
-                       | DAOverwriteOldStrokes [[TimedCoord]]
+                       | DAAppendToOldStrokes [[TimedCoord]]
+
+instance Show DrawingAreaUpdate where
+  show (DAMakePoint tc) = "DAMakePoint " ++ show tc
+  show (DAUndo) = "DAUndo"
+  show (DASetStroking b) = "DASetStroking " ++ show b
+--  show (DASetBackground _) = "DASetBackground <image>"
+  show (DAOverwriteCurrentStrokes tc) = "DAOverwriteCurrentStrokes " ++ show tc
+  show (DAAppendToOldStrokes tc) = "DAAppendToOldStrokes " ++ show tc
 
 drawingAreaUpdate :: DrawingAreaUpdate -> DrawingAreaState -> DrawingAreaState
 drawingAreaUpdate DAUndo d =
@@ -148,12 +156,12 @@ drawingAreaUpdate (DASetStroking False) d = -- Nothing) d =    -- Unclick
     }
 drawingAreaUpdate (DAMakePoint p) d =
   d { _dasCurrentStroke = (p : head (_dasCurrentStroke d)) : tail (_dasCurrentStroke d) }
-drawingAreaUpdate (DASetBackground b) d =
-  d { _dasCurrentBuffer = Just b }
+-- drawingAreaUpdate (DASetBackground b) d =
+--   d { _dasCurrentBuffer = Just b }
 drawingAreaUpdate (DAOverwriteCurrentStrokes cur) d =
   d { _dasCurrentStroke = cur }
-drawingAreaUpdate (DAOverwriteOldStrokes old) d =
-  d { _dasStrokes = old }
+drawingAreaUpdate (DAAppendToOldStrokes old) d =
+  d { _dasStrokes = _dasStrokes d ++ old }
 
 type TouchId = Word
 
@@ -165,23 +173,16 @@ data WidgetTouches t = WidgetTouches
   , _widgetTouches_finishedStrokes :: Dynamic t (Map.Map TouchId [TimedCoord])
   }
 
-corner :: Reflex t => El t -> IO (Int,Int)
-corner w = do
-  bRect <- getBoundingClientRect (_el_element w)
-  case bRect of
-    Nothing -> error "Error getting element corner"
-    Just b  -> do
-      top   <- fmap floor (getTop  b)
-      left  <- fmap floor (getLeft b)
-      return (top,left)
-
 
 -- Auxiliary tag
-data PointAction = PointsStart | PointsEnd | PointsMove
+data PointAction = PointsStart | PointsEnd | PointsMove | PointsClear
   deriving (Eq)
 
-widgetTouches :: MonadWidget t m => El t -> m (WidgetTouches t)
-widgetTouches el = do
+widgetTouches :: MonadWidget t m
+              => El t
+              -> Event t () -- Event to clear the touches history. TODO: Finisging a stroke should be an event with the finished strokes, rather than a dynamic that holds them until manual clearing like this.
+              -> m (WidgetTouches t)
+widgetTouches el clears = do
 
   let e = _el_element el
 
@@ -201,10 +202,11 @@ widgetTouches el = do
                        ,fmap (PointsMove,) (gate (current mouseisdown) mousemoves)
                        ,fmap (PointsEnd,) ends
                        ,fmap (PointsEnd,) mouseends
+                       ,(PointsClear, mempty) <$ clears
                        ])
 
-  currents  <- mapDyn fst strokes
-  finisheds <- mapDyn snd strokes
+  currents  <- nubDyn <$> mapDyn fst strokes
+  finisheds <- nubDyn <$> mapDyn snd strokes
 
 
   return $ WidgetTouches starts moves ends currents finisheds
@@ -255,6 +257,7 @@ widgetTouches el = do
     modifyStrokes (PointsMove, new) (cur,old) =
       let cur' = Map.unionWith (++) (fmap (:[]) new) cur
       in  (cur', old)
+    modifyStrokes (PointsClear, _) (cur, _) = (cur, mempty)
 
 
 relativizedCoord :: Int -> Int -> TimedCoord -> TimedCoord
@@ -269,10 +272,6 @@ touchCoord touch = do
 
 touchRelCoord :: Int -> Int -> Touch -> IO TimedCoord
 touchRelCoord x0 y0 tch = do
-  -- Just targ <- Touch.getTarget tch
-  -- Just brect <- getBoundingClientRect targ
-  -- x0 <- floor <$> getClientX brect
-  -- y0 <- floor <$> getClientY brect
   relativizedCoord x0 y0 <$> touchCoord tch
 
 
@@ -292,7 +291,7 @@ drawingArea cfg = mdo
 
   pixels <- performEvent (liftIO (getCanvasBuffer ctx canvEl) <$ _drawingAreaConfig_send cfg)
 
-  touches <- widgetTouches cEl
+  touches <- widgetTouches cEl never
   -- dynText =<< holdDyn "No text" (show <$> _widgetTouches_touchStarts touches)
 
   -- el "br" $ fin
@@ -304,41 +303,71 @@ drawingArea cfg = mdo
   -- display (_widgetTouches_finishedStrokes touches)
   -- performEvent_ ((liftIO . print) <$> _widgetTouches_touchStarts touches)
 
-  placeTime <- relativeCoords cEl
+  -- placeTime <- relativeCoords cEl
 
-  let dragPoints  = fmapMaybe id $ tag (current placeTime) (domEvent Mousemove cEl)
+  -- let dragPoints  = fmapMaybe id $ tag (current placeTime) (domEvent Mousemove cEl)
 
-  let firstPoints = fmapMaybe id $ tag (current placeTime) (domEvent Mousedown cEl)
+  -- let firstPoints = fmapMaybe id $ tag (current placeTime) (domEvent Mousedown cEl)
 
-  let pointEvents    = leftmost [ dragPoints, firstPoints ]
+  -- let pointEvents    = leftmost [ dragPoints, firstPoints ]
 
-  let points = fmap DAMakePoint $ gate (_dasStroking <$> current state)pointEvents
+  -- let points = fmap DAMakePoint $ gate (_dasStroking <$> current state)pointEvents
 
-  strokeStarts <- return $ DASetStroking True <$ domEvent Mousedown cEl
+  -- strokeStarts <- return $ DASetStroking True <$ domEvent Mousedown cEl
 
-  strokeEnds <- return $ DASetStroking False <$
-                           leftmost [() <$ domEvent Mouseup    cEl
-                                    ,domEvent Mouseleave cEl]
+  -- strokeEnds <- return $ DASetStroking False <$
+  --                          leftmost [() <$ domEvent Mouseup    cEl
+  --                                   ,domEvent Mouseleave cEl]
   -- undos <- never -- DAUndo <$ _drawingAreaConfig_undo cfg
-  backgroundUpdates <- (fmap.fmap) DASetBackground $
-    performEvent (ffor (tag (current state) strokeEnds) $ \s ->
+
+  -- backgroundUpdates <- (fmap.fmap) DASetBackground $
+  --   performEvent (ffor (tag (current state) oldStrokeOverwrites) $ \s ->
+  --   liftIO (recomputeBackground ctx canvEl s))
+  redrawGuardOver <- delay 0.0001 oldStrokeOverwrites
+  redrawOk <- holdDyn True (leftmost [True <$ redrawGuardOver, False <$ oldStrokeOverwrites])
+
+  backgroundUpdates <- performEvent (ffor (tag (current state) oldStrokeOverwrites) $ \s ->
     liftIO (recomputeBackground ctx canvEl s))
+  background <- holdDyn Nothing $ fmap Just backgroundUpdates
 
   let curStrokeOverwrites = fmap (DAOverwriteCurrentStrokes . Map.elems )
                             (updated $ _widgetTouches_currentStrokes touches)
-  let oldStrokeOverwrites = fmap (DAOverwriteOldStrokes . Map.elems)
+
+  let oldStrokeOverwrites = traceEvent "OldStrokeOverwrite" $ fmap (DAAppendToOldStrokes . Map.elems)
                             (updated $ _widgetTouches_finishedStrokes touches)
 
-  state <- foldDyn drawingAreaUpdate das0
-           (leftmost [points, strokeStarts, strokeEnds, backgroundUpdates, curStrokeOverwrites, oldStrokeOverwrites])
+  state <- foldDyn drawingAreaUpdate das0 oldStrokeOverwrites
+
+--            (leftmost [points, strokeStarts, strokeEnds, curStrokeOverwrites, oldStrokeOverwrites])
+--           (leftmost [points, strokeStarts, strokeEnds, curStrokeOverwrites, oldStrokeOverwrites])
+--           (leftmost [points, strokeStarts, strokeEnds, backgroundUpdates, curStrokeOverwrites, oldStrokeOverwrites])
+
+  text "STATE"
+  display state
+
+  el "br" fin
+
+  text "CURRENT TOUCHES"
+  display ( _widgetTouches_currentStrokes touches)
+
+  el "br" fin
+
+  text "FINISHED TOUCHES"
+  display ( _widgetTouches_finishedStrokes touches )
+
 
   tInit <- liftIO getCurrentTime
-  ticks <- tickLossy 0.03 tInit
+  ticks <- gate (current redrawOk) <$> tickLossy 0.03 tInit
 
-  performEvent_ (ffor (tag (current state) ticks) $ \s ->
-                  liftIO $ redraw ctx canvEl s)
-  performEvent_ (ffor (tag (current state) strokeStarts) $ \s ->
-                  liftIO (recomputeBackground ctx canvEl s) >> return ())
+  -- performEvent_ (ffor (tag (current state) ticks) $ \s ->
+  --                 liftIO $ redraw ctx canvEl s)
+  -- performEvent_ (ffor (tag ((,) <$> current state <*> current background) ticks) $ \s ->
+  --                 liftIO $ redraw' ctx canvEl s)
+  performEvent_ (ffor (tag ((,) <$> fmap Map.elems (current ( _widgetTouches_finishedStrokes touches)) <*> fmap Map.elems (current (_widgetTouches_currentStrokes touches))) ticks) $ \s ->
+                  liftIO $ redraw'' ctx canvEl s)
+
+  -- performEvent_ (ffor (tag (current state) oldStrokeOverwrites) $ \s ->
+  --                 liftIO (recomputeBackground ctx canvEl s) >> return ())
 
   -- display state
 
@@ -407,15 +436,15 @@ recomputeBackground ctx canv das = do
   return bs
 
 
-redraw :: CanvasRenderingContext2D
-       -> HTMLCanvasElement
-       -> DrawingAreaState
-       -> IO ()
-redraw ctx canv das = do
+redraw' :: CanvasRenderingContext2D
+        -> HTMLCanvasElement
+        -> (DrawingAreaState, Maybe ImageData)
+        -> IO ()
+redraw' ctx canv (das,bkg) = do
   save ctx
   t <- getCurrentTime
-  case _dasCurrentBuffer das of
-    Just _  -> putImageData ctx (_dasCurrentBuffer das) 0 0
+  case bkg of
+    Just _  -> putImageData ctx bkg 0 0
     Nothing -> clearArea ctx canv
   -- TODO don't just take one
   forM_ (_dasCurrentStroke das) $ \cs ->
@@ -430,6 +459,65 @@ redraw ctx canv das = do
         closePath ctx
         stroke ctx
   restore ctx
+
+redraw'' :: CanvasRenderingContext2D
+         -> HTMLCanvasElement
+         -> ([[TimedCoord]],[[TimedCoord]])
+         -> IO ()
+redraw'' ctx canv (old,cur) = do
+  save ctx
+  t <- getCurrentTime
+  clearArea ctx canv
+  -- TODO don't just take one
+  forM_ old $ \cs ->
+    forM_ (Prelude.zip cs (Prelude.tail $ cs))
+      $ \(TC hT hX hY , TC hT' hX' hY') -> do
+        beginPath ctx
+        moveTo ctx (fromIntegral hX) (fromIntegral hY)
+        let h = floor . (* 255) . (^4) . (+ 0.75) . (/ 4) . sin . (2*pi *) $ realToFrac (diffUTCTime t hT)
+            c = "hsla(" ++ show h ++ ",50%,45%,1)"
+        setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
+        lineTo ctx (fromIntegral hX') (fromIntegral hY')
+        closePath ctx
+        stroke ctx
+  forM_ cur $ \cs ->
+    forM_ (Prelude.zip cs (Prelude.tail $ cs))
+      $ \(TC hT hX hY , TC hT' hX' hY') -> do
+        beginPath ctx
+        moveTo ctx (fromIntegral hX) (fromIntegral hY)
+        let h = floor . (* 255) . (^4) . (+ 0.75) . (/ 4) . sin . (2*pi *) $ realToFrac (diffUTCTime t hT)
+            c = "hsla(" ++ show h ++ ",50%,45%,1)"
+        setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
+        lineTo ctx (fromIntegral hX') (fromIntegral hY')
+        closePath ctx
+        stroke ctx
+  restore ctx
+
+
+
+-- redraw :: CanvasRenderingContext2D
+--        -> HTMLCanvasElement
+--        -> DrawingAreaState
+--        -> IO ()
+-- redraw ctx canv das = do
+--   save ctx
+--   t <- getCurrentTime
+--   case _dasCurrentBuffer das of
+--     Just _  -> putImageData ctx (_dasCurrentBuffer das) 0 0
+--     Nothing -> clearArea ctx canv
+--   -- TODO don't just take one
+--   forM_ (_dasCurrentStroke das) $ \cs ->
+--     forM_ (Prelude.zip cs (Prelude.tail $ cs))
+--       $ \(TC hT hX hY , TC hT' hX' hY') -> do
+--         beginPath ctx
+--         moveTo ctx (fromIntegral hX) (fromIntegral hY)
+--         let h = floor . (* 255) . (^4) . (+ 0.75) . (/ 4) . sin . (2*pi *) $ realToFrac (diffUTCTime t hT)
+--             c = "hsla(" ++ show h ++ ",50%,45%,1)"
+--         setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
+--         lineTo ctx (fromIntegral hX') (fromIntegral hY')
+--         closePath ctx
+--         stroke ctx
+--   restore ctx
 
 
 type Result = [[TimedCoord]]
@@ -638,3 +726,17 @@ defaultPics = unlines
   [ "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character01/0709_01.png"
   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character02/0710_01.png"
   ]
+
+
+
+
+corner :: Reflex t => El t -> IO (Int,Int)
+corner w = do
+  bRect <- getBoundingClientRect (_el_element w)
+  case bRect of
+    Nothing -> error "Error getting element corner"
+    Just b  -> do
+      top   <- fmap floor (getTop  b)
+      left  <- fmap floor (getLeft b)
+      return (top,left)
+
