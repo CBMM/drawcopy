@@ -479,14 +479,11 @@ main = mainWidgetWithHead appHead $ mdo
   t0 <- liftIO getCurrentTime
   showSettings <- toggle True =<< bootstrapButton "cog"
   showResults <- toggle False =<< bootstrapButton "th-list"
-  clearResults <- switchPromptly never =<< dyn =<<
-                  forDyn showResults (bool (return never) (responsesWidget responses))
 
   picIndex <- foldDyn ($) 0 $
               leftmost [ const 0 <$ updated (_esPicSrcs es)
                        , succ    <$ submits
                        ]
-  es <- elClass "div" "settings" $ settings showSettings
 
   stimTime <- holdDyn t0 =<< performEvent (liftIO getCurrentTime <$ updated picIndex)
 
@@ -496,7 +493,17 @@ main = mainWidgetWithHead appHead $ mdo
                          picIndex
                          (_esPicSrcs es)
 
-  strokes  <- question stimulus (() <$ submits)
+  (strokes, submitClicks) <- divClass "interaction" $ do
+    strokes <- question stimulus (() <$ submits)
+    submitClicks <- button "Submit"
+    return (strokes, submitClicks)
+
+  es <- elClass "div" "settings" $ settings showSettings
+  clearResults <- switchPromptly never =<< dyn =<<
+                  forDyn showResults (bool (return never)
+                                      (responsesWidget responses))
+
+
 
   trialMetadata <- $(qDyn [| ( $(unqDyn [| _esSubject es |]),
                                $(unqDyn [| stimulus      |]),
@@ -504,7 +511,6 @@ main = mainWidgetWithHead appHead $ mdo
                                $(unqDyn [| strokes       |]))
                            |])
 
-  submitClicks <- button "Submit"
   submits <- performEvent
     (ffor (tag (current trialMetadata) submitClicks) $ \(subj,stm,tStm,strk) -> do
         tNow <- liftIO getCurrentTime
@@ -599,7 +605,6 @@ appHead = do
 appStyle :: String
 appStyle = [s|
 .settings > div {
-  background-color: gray;
   display: flex;
 }
 
