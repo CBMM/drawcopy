@@ -232,30 +232,14 @@ drawingArea touchClears cfg = mdo
     liftIO (recomputeBackground' ctx canvEl strks))
   background <- holdDyn Nothing $ fmap Just backgroundUpdates
 
-  -- el "br" fin
-
-  -- text "CURRENT TOUCHES"
-  -- display ( _widgetTouches_currentStrokes touches)
-
-  -- el "br" fin
-
-  -- text "FINISHED TOUCHES"
-  -- display ( _widgetTouches_finishedStrokes touches )
-
-
   tInit <- liftIO getCurrentTime
   ticks <- gate (current redrawOk) <$> tickLossy 0.03 tInit
 
-  -- performEvent_ (ffor (tag ((,) <$> fmap Map.elems (current ( _widgetTouches_finishedStrokes touches)) <*> fmap Map.elems (current (_widgetTouches_currentStrokes touches))) ticks) $ \s ->
-  --                 liftIO $ redraw'' ctx canvEl s)
-  let -- redrawData :: Behavior t ([[TimedCoord]], Maybe ImageData)
-      redrawData = (,) <$> fmap Map.elems (current $ _widgetTouches_currentStrokes touches)
+  let redrawData = (,) <$> fmap Map.elems
+                           (current $ _widgetTouches_currentStrokes touches)
                        <*> current background
 
-  performEvent_ $ ffor (tag redrawData ticks) (\s -> liftIO $ redraw' ctx canvEl s)
-  -- performEvent_ (ffor (tag ((,) <$> fmap Map.elems (current ( _widgetTouches_finishedStrokes touches)))
-  --                           <*> current background) ticks $ \s ->
-  --                 liftIO $ redraw' ctx canvEl s)
+  performEvent_ $ ffor (tag redrawData ticks) (liftIO . redraw' ctx canvEl)
 
   return $ DrawingArea cEl s pixels
 
@@ -399,35 +383,7 @@ redraw'' ctx canv (old,cur) = do
         stroke ctx
   restore ctx
 
-
-
--- redraw :: CanvasRenderingContext2D
---        -> HTMLCanvasElement
---        -> DrawingAreaState
---        -> IO ()
--- redraw ctx canv das = do
---   save ctx
---   t <- getCurrentTime
---   case _dasCurrentBuffer das of
---     Just _  -> putImageData ctx (_dasCurrentBuffer das) 0 0
---     Nothing -> clearArea ctx canv
---   -- TODO don't just take one
---   forM_ (_dasCurrentStroke das) $ \cs ->
---     forM_ (Prelude.zip cs (Prelude.tail $ cs))
---       $ \(TC hT hX hY , TC hT' hX' hY') -> do
---         beginPath ctx
---         moveTo ctx (fromIntegral hX) (fromIntegral hY)
---         let h = floor . (* 255) . (^4) . (+ 0.75) . (/ 4) . sin . (2*pi *) $ realToFrac (diffUTCTime t hT)
---             c = "hsla(" ++ show h ++ ",50%,45%,1)"
---         setStrokeStyle ctx (Just . CanvasStyle . jsval $ Data.JSString.pack c)
---         lineTo ctx (fromIntegral hX') (fromIntegral hY')
---         closePath ctx
---         stroke ctx
---   restore ctx
-
-
 type Result = [[TimedCoord]]
-
 
 questionTagging :: MonadWidget t m
                 => (Assignment, StimulusSequence, StimSeqItem)
@@ -498,12 +454,13 @@ main = mainWidgetWithHead appHead $ mdo
     submitClicks <- button "Submit"
     return (strokes, submitClicks)
 
-  es <- elClass "div" "settings" $ settings showSettings
+  settingsAts <- forDyn showSettings $
+    ("class" =: "settings" <>) . bool ("style" =: "display:none") mempty
+  es <- elDynAttr "div" settingsAts settings
+
   clearResults <- switchPromptly never =<< dyn =<<
                   forDyn showResults (bool (return never)
                                       (responsesWidget responses))
-
-
 
   trialMetadata <- $(qDyn [| ( $(unqDyn [| _esSubject es |]),
                                $(unqDyn [| stimulus      |]),
@@ -517,15 +474,13 @@ main = mainWidgetWithHead appHead $ mdo
         return $ Response subj stm tStm tNow strk
     )
 
-  -- responses <- foldDyn (:) [] submits
   responses <- foldDyn ($) [] (leftmost [fmap (:) submits, const [] <$ clearResults])
 
   return ()
 
-settings :: MonadWidget t m => Dynamic t Bool -> m (ExperimentState t)
-settings vis = do
-  settingAttrs <- forDyn vis $ bool ("style" =: "display:none;") mempty
-  elDynAttr "div" settingAttrs $ do
+
+settings :: MonadWidget t m => m (ExperimentState t)
+settings = el "div" $ do
     es <- elClass "div" "settings-fields" $ do
       nm   <- bootstrapLabeledInput "Subject" "subejct"
               (\a -> value <$> textInput (def & attributes .~ constDyn a))
@@ -549,24 +504,22 @@ responsesWidget resps = divClass "responses" $ do
   pb <- getPostBuild
   rtext <- mapDyn (BSL.unpack . A.encodePretty) resps
 
-  (sel',clear) <- divClass "results-buttons" $ do
-   sel <- elClass "button" "btn btn-large results-select" $ do
+  (sel,clear) <- divClass "results-buttons" $ do
+   sel <- fmap (domEvent Click . fst) $
+          elAttr' "button" ("class" =: "btn btn-large results-select") $ do
      b <- bootstrapButton "screenshot"
      text "Select all"
-     return b
-   clear <- elClass "button" "btn btn-large results-remove" $ do
+   clear <- fmap (domEvent Click . fst) $
+            elAttr' "button" ("class" =: "btn btn-large results-remove") $ do
      b <- bootstrapButton "remove"
      text "Reset results"
-     return b
    return (sel,clear)
 
-  el "br" fin
-  sel <- delay 0.1 sel'
-
   ta <- _textArea_element <$> textArea
-        (def & textAreaConfig_setValue .~ updated rtext)
---         (def & textAreaConfig_setValue .~ tag (current rtext) pb)
-  performEvent_ ((liftIO (putStrLn "TEST") >> focus ta >> select ta) <$ leftmost [pb, () <$ updated rtext, sel])
+        (def & textAreaConfig_setValue .~ leftmost [tag (current rtext) pb,
+                                                    "[]" <$ clear])
+
+  performEvent_ (liftIO (select ta) <$ leftmost [pb, () <$ updated rtext, sel])
   return clear
 
 
@@ -603,29 +556,7 @@ appHead = do
   el "style" (text appStyle)
 
 appStyle :: String
-appStyle = [s|
-.settings > div {
-  display: flex;
-}
-
-.settings-fields {
-  padding: 20px;
-  width: 50%;
-}
-
-.settings-preview{
-  padding:20px;
-  width: 50%;
-}
-
-#images { resize: vertical; }
-
-.preview-pic {
-  height: 40px;
-  margin: 4px;
-}
-
-|] ++ unlines [
+appStyle =  unlines [
  ".question div canvas{"
  , "  height: "     ++ show canvH ++ "px;"
  , "  min-height: " ++ show canvH ++ "px;"
