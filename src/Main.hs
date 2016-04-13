@@ -477,8 +477,10 @@ instance A.FromJSON Response where
 main :: IO ()
 main = mainWidgetWithHead appHead $ mdo
   t0 <- liftIO getCurrentTime
-  showSettings <- toggle True =<< bootstrapButton "cog"
+  settingsButton <- bootstrapButton "cog"
+  showSettings <- holdDyn True $ leftmost [False <$ closeSettings, True <$ settingsButton]
   showResults <- toggle False =<< bootstrapButton "th-list"
+
   clearResults <- switchPromptly never =<< dyn =<<
                   forDyn showResults (bool (return never) (responsesWidget responses))
 
@@ -486,7 +488,7 @@ main = mainWidgetWithHead appHead $ mdo
               leftmost [ const 0 <$ updated (_esPicSrcs es)
                        , succ    <$ submits
                        ]
-  es <- elClass "div" "settings" $ settings showSettings
+  (es,closeSettings) <- elClass "div" "settings" $ settings showSettings
 
   stimTime <- holdDyn t0 =<< performEvent (liftIO getCurrentTime <$ updated picIndex)
 
@@ -516,11 +518,11 @@ main = mainWidgetWithHead appHead $ mdo
 
   return ()
 
-settings :: MonadWidget t m => Dynamic t Bool -> m (ExperimentState t)
+settings :: MonadWidget t m => Dynamic t Bool -> m (ExperimentState t, Event t ())
 settings vis = do
   settingAttrs <- forDyn vis $ bool ("style" =: "display:none;") mempty
   elDynAttr "div" settingAttrs $ do
-    es <- elClass "div" "settings-fields" $ do
+    (es,closeB) <- elClass "div" "settings-fields" $ do
       nm   <- bootstrapLabeledInput "Subject" "subejct"
               (\a -> value <$> textInput (def & attributes .~ constDyn a))
 
@@ -529,14 +531,15 @@ settings vis = do
               (\a -> value <$> textArea (def & attributes .~ constDyn ("id" =: "results" <> a)
                                              & textAreaConfig_initialValue .~ defaultPics))
       pics' <- mapDyn Prelude.lines pics
-      return $ ExperimentState nm pics'
+      closeButton <- elAttr "div" ("class" =: "settings-ok") $ bootstrapButton "ok"
+      return (ExperimentState nm pics', closeButton)
     elClass "div" "settings-preview" $
       dyn =<< (forDyn (_esPicSrcs es) $ \pics ->
                 (forM_  pics
                  (\src -> elAttr
                           "img" ("class" =: "preview-pic" <> "src" =: src)
                           fin)))
-    return es
+    return (es,closeB)
 
 responsesWidget :: MonadWidget t m => Dynamic t [Response] -> m (Event t ())
 responsesWidget resps = divClass "responses" $ do
