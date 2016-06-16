@@ -340,12 +340,12 @@ question :: MonadWidget t m => Dynamic t String -> Event t () -> m (Dynamic t [[
 question imgUrl touchClears = elAttr "div" ("class" =: "question") $ do
 
   el "div" $ do
-    el "p" $ text "Goal Picture"
+    divClass "goal-header" $ divClass "frog-div" $ elAttr "img" ("src" =: "frogpencil.jpg") fin
     imgAttrs <- mapDyn (\i -> "class" =: "goal-img" <> "src" =: i) imgUrl
     elDynAttr "img" imgAttrs fin
 
   da <- elClass "div" "drawing-area" $ do
-    el "p" $ text "Your Copy"
+    divClass "draw-header" $ divClass "you-div" $ el "span" $ text "You"
     drawingArea touchClears defDAC
 
   return $ _drawingArea_strokes da
@@ -403,7 +403,8 @@ main = mainWidgetWithHead appHead $ mdo
 
   (strokes, submitClicks) <- divClass "interaction" $ do
     strokes <- question stimulus (() <$ submits)
-    submitClicks <- button "OK"
+    btn <- fmap fst $ elAttr' "button" ("class" =: "submit-button btn btn-default-btn-lg") $ bootstrapButton "ok-circle"
+    let submitClicks = domEvent Click btn
     return (strokes, submitClicks)
 
   settingsAts <- forDyn showSettings $
@@ -508,22 +509,15 @@ appHead = do
 
 appStyle :: String
 appStyle =  unlines [
- ".question div canvas{"
+ ".goal-img, canvas{"
  , "  height: "     ++ show canvH ++ "px;"
  , "  min-height: " ++ show canvH ++ "px;"
  , "  max-height: " ++ show canvH ++ "px;"
  , "  width: "      ++ show canvW ++ "px;"
  , "  min-width: "  ++ show canvW ++ "px;"
  , "  max-width: "  ++ show canvW ++ "px;"
- ,"}\n\n"] ++ unlines [
- ".question div img{"
- , "  height: "     ++ show canvH ++ "px;"
- , "  min-height: " ++ show canvH ++ "px;"
- , "  max-height: " ++ show canvH ++ "px;"
- , "  width: "      ++ show canvW ++ "px;"
- , "  min-width: "  ++ show canvW ++ "px;"
- , "  max-width: "  ++ show canvW ++ "px;"
- ,"}"]
+ ,"}\n\n"
+ ]
 
 defaultPics :: String
 defaultPics = unlines
@@ -553,81 +547,6 @@ touchCoord touch = do
 touchRelCoord :: Int -> Int -> Touch -> IO TimedCoord
 touchRelCoord x0 y0 tch = do
   relativizedCoord x0 y0 <$> touchCoord tch
-
-
-
-corner :: Reflex t => El t -> IO (Int,Int)
-corner w = do
-  bRect <- getBoundingClientRect (_el_element w)
-  case bRect of
-    Nothing -> error "Error getting element corner"
-    Just b  -> do
-      top   <- fmap floor (getTop  b)
-      left  <- fmap floor (getLeft b)
-      return (top,left)
-
-
--- data DrawingAreaState = DAState
---   { -- _dasCurrentBuffer :: Maybe ImageData
---     _dasCanUndo       :: Bool
---   , _dasCurrentStroke :: [[TimedCoord]]
---   , _dasStrokes       :: [[TimedCoord]]
---   , _dasUndoneStrokes :: [[TimedCoord]]
---   , _dasStroking      :: Bool
---   }
-
--- instance Show DrawingAreaState where
---   show das = show $ _dasStrokes das
-
--- das0 :: DrawingAreaState
--- das0 = DAState False [] [] [] False
-
--- data DrawingAreaUpdate = DAMakePoint TimedCoord
---                          -- ^ Add a timestamped point to the current stroke
---                        | DAUndo
---                          -- ^ Undo the last stroke
---                          -- | DASetStroking (Maybe ImageData)
---                        | DASetStroking Bool
---                          -- ^ Start a new stroke (Just rasterize)
---                          --   or end the current one (Nothing)
---  --                       | DASetBackground ImageData
---                        | DAOverwriteCurrentStrokes [[TimedCoord]]
---                        | DAAppendToOldStrokes [[TimedCoord]]
-
--- instance Show DrawingAreaUpdate where
---   show (DAMakePoint tc) = "DAMakePoint " ++ show tc
---   show (DAUndo) = "DAUndo"
---   show (DASetStroking b) = "DASetStroking " ++ show b
--- --  show (DASetBackground _) = "DASetBackground <image>"
---   show (DAOverwriteCurrentStrokes tc) = "DAOverwriteCurrentStrokes " ++ show tc
---   show (DAAppendToOldStrokes tc) = "DAAppendToOldStrokes " ++ show tc
-
--- drawingAreaUpdate :: DrawingAreaUpdate -> DrawingAreaState -> DrawingAreaState
--- drawingAreaUpdate DAUndo d =
---   if   _dasStroking d || not (_dasCanUndo d) then d -- Ignore UNDO mid-stroke
---   else d { _dasCanUndo       = False
---          , _dasStrokes       = strokes'
---          , _dasUndoneStrokes = unstrokes' }
---   where
---     (strokes', unstrokes') = case _dasStrokes d of
---       []     -> ([], _dasUndoneStrokes d)
---       (x:xs) -> (xs, x : _dasUndoneStrokes d)
--- drawingAreaUpdate (DASetStroking True) d = -- (Just b))  d =  -- Click
---   d { _dasStroking      = True }
--- drawingAreaUpdate (DASetStroking False) d = -- Nothing) d =    -- Unclick
---   d { _dasCurrentStroke = []
---     , _dasStroking      = False
---     , _dasStrokes      =  _dasCurrentStroke d ++ _dasStrokes d
---     }
--- drawingAreaUpdate (DAMakePoint p) d =
---   d { _dasCurrentStroke = (p : head (_dasCurrentStroke d)) : tail (_dasCurrentStroke d) }
--- -- drawingAreaUpdate (DASetBackground b) d =
--- --   d { _dasCurrentBuffer = Just b }
--- drawingAreaUpdate (DAOverwriteCurrentStrokes cur) d =
---   d { _dasCurrentStroke = cur }
--- drawingAreaUpdate (DAAppendToOldStrokes old) d =
---   d { _dasStrokes = _dasStrokes d ++ old }
-
 
 
 -- taggingInteractionWidget :: forall t m.MonadWidget t m => m ()
