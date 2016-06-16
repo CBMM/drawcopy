@@ -33,10 +33,13 @@ executable drawcopy
                        random,
                        reflex, 
                        reflex-dom >= 0.3 && < 0.4, 
-                       ghcjs-base,
                        ghcjs-dom >= 0.2 && < 0.3,
                        tagging-common >= 0.1 && < 0.2,
                        text,
                        time
+  if impl(ghcjs)
+    build-depends:
+      ghcjs-base
+
   hs-source-dirs:      src
   default-language:    Haskell2010

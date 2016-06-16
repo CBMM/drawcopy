@@ -1,0 +1,3 @@
+[submodule "deps/tagging"]
+	path = deps/tagging
+	url = https://github.com/cbmm/tagging
