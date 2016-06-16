@@ -1,13 +1,14 @@
 body, html {
-  background-color: hsla(150,100%,40%,1);
+  background-color: hsla(120,100%,50%,1);
   position: relative;
   height: 100%;
   margin: 0px;
   padding: 0px;
+  overflow: hidden;
 }
 
 .settings, .responses {
-    background-color: rgba(255,255,255,0.90);
+    background-color: rgba(0,255,0,0.90);
     margin: 10px;
     box-shadow: 3px 3px 3px rgba(0,0,0,0.1);
     border-left: solid 2px rgba(0,0,0,0.5);
@@ -52,18 +53,27 @@ body, html {
   position: relative;
 }
 
-.settings-ok {
-    width: 100%;
-    height: 40px;
-    background-color: white;
+.settings-ok, .submit-button {
     border-radius: 10px;
     border: 1px solid rgba(0,0,0,0.25);
     font-color: gray;
 }
 
-.settings-ok span {
+.settings-ok {
+    width: 100%;
+    height: 40px;
+    background-color: white;
+}
+
+.submit-button {
+    width: 300px;
+    height: 100px;
+}
+
+
+.settings-ok span, .submit-button span {
     font-size:20pt;
-    color: gray;
+    color: green;
 }
 
 .button-bank {
@@ -74,7 +84,7 @@ body, html {
 
 .glyphicon-cog, .glyphicon-th-list {
     font-size:20pt;
-    color: rgba(255,255,255,0.5);
+    color: black;
     margin: 5px;
 }
 
@@ -147,8 +157,34 @@ p {
   text-align: right;
 }
 
-.question div img {
+.goal-img {
   box-shadow: 0px 5px 10px rgba(0,0,0,0.25);
+}
+
+.goal-header, .draw-header {
+    display: flex;
+    justify-content: space-around;
+}
+
+.frog-div, .you-div {
+    background-color: white;
+    width:150px;
+    height: 150px;
+    border-radius:75px;
+    box-shadow: 0px 5px 5px rgba(0,0,0,0.25);
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    margin: 20px;
+    font-size:24pt;
+}
+
+.frog-div > img {
+    width:100px;
+}
+
+.goal-header > img {
+    width: 100px;
 }
 
 .question .drawing-area {
@@ -168,7 +204,7 @@ p {
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  background-color: rgba(255,255,255,0.5);
+  background-color: hsla(120,5%,34%,0.65);
   box-shadow: 0px 30px 30px hsla(158,51%,22%,0.25);
 }
 
