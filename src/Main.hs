@@ -511,7 +511,7 @@ appHead = do
               <> "type" =: "text/css"
               <> "href" =: "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css")
     fin
-  elAttr "link" ("href" =: "drawcopy.css"
+  elAttr "link" ("href" =: "static/drawcopy.css"
               <> "rel"  =: "stylesheet"
               <> "type" =: "text/css") fin
   el "style" (text appStyle)
