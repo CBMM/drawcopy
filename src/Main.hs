@@ -62,9 +62,11 @@ import           Data.JSString (JSString, pack)
 import           GHCJS.Marshal (fromJSVal)
 import           GHCJS.Types (jsval)
 import           GHCJS.DOM.Element (getBoundingClientRect)
+import           GHCJS.DOM.Location (getSearch)
 import           GHCJS.DOM.Touch      (getIdentifier,getClientX,getClientY)
 import           GHCJS.DOM.TouchEvent (TouchEvent, getChangedTouches)
 import           GHCJS.DOM.TouchList   (getLength,item)
+import           GHCJS.DOM.Window (getLocation)
 #endif
 -------------------------------------------------------------------------------
 import           Tagging.User
@@ -327,28 +329,33 @@ redraw ctx canv (tc,bkg) = do
 
 type Result = [[TimedCoord]]
 
+
 questionTagging :: MonadWidget t m
                 => (Assignment, StimulusSequence, StimSeqItem)
                 -> m (Dynamic t Result)
 questionTagging (asgn, stimseq, ssi) = do
   case ssiStimulus ssi of
     A.String picUrl -> do
-      el "div" $ question (constDyn $ T.unpack picUrl) never
+      el "div" $ question (constDyn $ T.unpack picUrl) never False
     _ -> text "Unable to fetch stimulus image" >> return (constDyn [])
 
-question :: MonadWidget t m => Dynamic t String -> Event t () -> m (Dynamic t [[TimedCoord]])
-question imgUrl touchClears = elAttr "div" ("class" =: "question") $ do
+question :: MonadWidget t m => Dynamic t String -> Event t () -> Bool -> m (Dynamic t [[TimedCoord]])
+question imgUrl touchClears overlap = elAttr "div" (mayOverlapClass "question") $ do
 
-  el "div" $ do
+  elAttr "div" (mayOverlapClass "example-area") $ do
     divClass "goal-header" $ divClass "frog-div" $ elAttr "img" ("src" =: "frogpencil.jpg") fin
     imgAttrs <- mapDyn (\i -> "class" =: "goal-img" <> "src" =: i) imgUrl
     elDynAttr "img" imgAttrs fin
 
-  da <- elClass "div" "drawing-area" $ do
-    divClass "draw-header" $ divClass "you-div" $ el "span" $ text "You"
+  da <- elAttr "div" (mayOverlapClass "drawing-area") $ do
+    divClass "draw-header" $ if   overlap
+                             then fin
+                             else divClass "you-div" $ el "span" $ text "You"
     drawingArea touchClears defDAC
 
   return $ _drawingArea_strokes da
+
+  where mayOverlapClass baseClass = "class" =: (baseClass <> bool "" " overlap" overlap)
 
 
 
@@ -379,13 +386,15 @@ instance A.FromJSON Response where
 
 main :: IO ()
 main = mainWidgetWithHead appHead $ mdo
+  params <- liftIO $ currentWindow >>= \(Just win) -> getQueryParams win
+  let overlap = let l = Map.lookup "overlap" params
+                in  not (l == Nothing || l == Just "false")
   t0 <- liftIO getCurrentTime
 
   (settingsButton, showResults) <- divClass "button-bank" $ do
     settingsBtn <- bootstrapButton "cog"
     showResults <- toggle False =<< bootstrapButton "th-list"
     return (settingsBtn, showResults)
-
 
   showSettings <- foldDyn ($) True $ leftmost [const False <$ closeSettings, not <$ settingsButton]
   picIndex <- foldDyn ($) 0 $
@@ -402,7 +411,7 @@ main = mainWidgetWithHead appHead $ mdo
                          (_esPicSrcs es)
 
   (strokes, submitClicks) <- divClass "interaction" $ do
-    strokes <- question stimulus (() <$ submits)
+    strokes <- question stimulus (() <$ submits) overlap
     btn <- fmap fst $ elAttr' "button" ("class" =: "submit-button btn btn-default-btn-lg") $ bootstrapButton "ok-circle"
     let submitClicks = domEvent Click btn
     return (strokes, submitClicks)
@@ -588,6 +597,14 @@ apDyn mf a = do
   f <- mf
   combineDyn ($) f a
 
+getQueryParams :: Window -> IO (Map.Map String String)
+getQueryParams w = do
+  Just loc <- getLocation w
+  qs <- getSearch loc
+  return . Map.mapKeys T.unpack . Map.map (T.unpack . T.drop 1)
+         . Map.fromList . fmap (T.breakOn "=") . T.splitOn "&" . T.dropWhile (== '?') $ T.pack qs
+
+
 #ifdef ghcjs_HOST_OS
 #else
 data ImageData
@@ -596,6 +613,7 @@ data JSString
 data CanvasStyle = CanvasStyle JSString
 data CanvasRenderingContext2D
 data ClientBoundingRect
+data Window
 getLeft :: ClientBoundingRect -> m Float
 getLeft = undefined
 getTop :: ClientBoundingRect -> m Float
@@ -626,4 +644,6 @@ getChangedTouches = undefined
 getLength = undefined
 setLineWidth = undefined
 setLineCap = undefined
+getLocation = undefined
+getSearch = undefined
 #endif
