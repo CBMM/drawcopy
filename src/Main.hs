@@ -343,7 +343,7 @@ question :: MonadWidget t m => Dynamic t String -> Event t () -> Bool -> m (Dyna
 question imgUrl touchClears overlap = elAttr "div" (mayOverlapClass "question") $ do
 
   elAttr "div" (mayOverlapClass "example-area") $ do
-    divClass "goal-header" $ divClass "frog-div" $ elAttr "img" ("src" =: "frogpencil.jpg") fin
+    divClass "goal-header" $ divClass "frog-div" $ elAttr "img" ("src" =: "static/frogpencil.jpg") fin
     imgAttrs <- mapDyn (\i -> "class" =: "goal-img" <> "src" =: i) imgUrl
     elDynAttr "img" imgAttrs fin
 
