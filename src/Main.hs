@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
@@ -54,7 +55,7 @@ import qualified GHCJS.DOM.MouseEvent
 
 import           GHCJS.DOM.Types hiding (Event)
 import           Reflex hiding (select)
-import           Reflex.Dom hiding (restore, select)
+import           Reflex.Dom hiding (restore, select, Window, Element, preventDefault)
 import           System.Random (StdGen, getStdGen, randomRIO)
 import           System.Random.MWC hiding (restore, save)
 #ifdef ghcjs_HOST_OS
@@ -68,17 +69,13 @@ import           GHCJS.DOM.TouchEvent (TouchEvent, getChangedTouches)
 import           GHCJS.DOM.TouchList   (getLength,item)
 import           GHCJS.DOM.Window (getLocation)
 #endif
--------------------------------------------------------------------------------
-import           Tagging.User
-import           Tagging.Stimulus
-import           Tagging.Response
 
 
 -------------------------------------------------------------------------------
 data DrawingAreaConfig t = DrawingAreaConfig
   { _drawingAreaConfig_clear  :: Event t ()
   , _drawingAreaConfig_radius :: Behavior t Double
-  , _drawingAreaConfig_color  :: Behavior t String
+  , _drawingAreaConfig_color  :: Behavior t T.Text
   , _drawingAreaConfig_undo   :: Event t ()
   , _drawingAreaConfig_send   :: Event t ()
   }
@@ -137,7 +134,7 @@ widgetTouches :: MonadWidget t m
               -> m (WidgetTouches t)
 widgetTouches el clears = do
 
-  let e = _el_element el
+  let e =  _el_element el
 
   starts      <- wrapDomEvent e (`on` touchStart) (cbStartOrEnd e)
   mousestarts <- wrapDomEvent e (`on` mouseDown)  (mouseHandler e)
@@ -167,7 +164,7 @@ widgetTouches el clears = do
   return $ WidgetTouches starts moves ends currents finisheds
 
   where
-    cbStartOrEnd :: Element -> EventM e TouchEvent (Map.Map TouchId TimedCoord)
+    -- cbStartOrEnd :: Element -> EventM e TouchEvent (Map.Map TouchId TimedCoord)
     cbStartOrEnd clientEl = do
       preventDefault
       e <- event
@@ -177,7 +174,7 @@ widgetTouches el clears = do
       Just tl <- liftIO $ getChangedTouches e
       liftIO $ touchListToTCMap x0 y0 tl
 
-    mouseHandler :: Element -> EventM e MouseEvent (Map.Map TouchId TimedCoord)
+    -- mouseHandler :: Element -> EventM e MouseEvent (Map.Map TouchId TimedCoord)
     mouseHandler clientEl = do
       preventDefault
       rnd <- liftIO $ return 0 -- randomRIO (-0.01, 0.01)
@@ -209,9 +206,9 @@ widgetTouches el clears = do
     modifyStrokes (PointsEnd, del) (cur, old) =
       let delEntries :: Map.Map TouchId [TimedCoord] = Map.filterWithKey (\k _ -> Map.member k del) cur
           insEntries :: [[TimedCoord]] = Map.elems $ fmap reverse delEntries
-      in  (Map.difference cur delEntries, old ++ insEntries)
+      in  (Map.difference cur delEntries, old <> insEntries)
     modifyStrokes (PointsMove, new) (cur,old) =
-      let cur' = Map.unionWith (++) (fmap (:[]) new) cur
+      let cur' = Map.unionWith (<>) (fmap (:[]) new) cur
       in  (cur', old)
     modifyStrokes (PointsClear, _) (cur, _) = (cur, mempty)
 
@@ -223,8 +220,8 @@ drawingArea touchClears cfg = mdo
   pb <- getPostBuild
 
   (cEl,_) <- elAttr' "canvas" ("id" =: "canvas"
-                      <> "width"  =: show canvW
-                      <> "height" =: show canvH) $ fin
+                      <> "width"  =: (T.pack . show) canvW
+                      <> "height" =: (T.pack . show) canvH) $ blank
 
   let canvEl = (castToHTMLCanvasElement . _el_element) cEl
 
@@ -298,7 +295,7 @@ drawStroke ctx tcs = do
     [] -> return ()
     [TC t x y] -> do
       moveTo ctx (fromIntegral x) (fromIntegral y)
-      lineTo ctx (fromIntegral $ x+1) (fromIntegral y)
+      lineTo ctx (fromIntegral $ x + 1) (fromIntegral y)
     [TC t0 x0 y0, TC t1 x1 y1]
       | max (x1 - x0) (y1 - y0) < 1 -> do
           moveTo ctx (fromIntegral x0) (fromIntegral y0)
@@ -330,26 +327,26 @@ redraw ctx canv (tc,bkg) = do
 type Result = [[TimedCoord]]
 
 
-questionTagging :: MonadWidget t m
-                => (Assignment, StimulusSequence, StimSeqItem)
-                -> m (Dynamic t Result)
-questionTagging (asgn, stimseq, ssi) = do
-  case ssiStimulus ssi of
-    A.String picUrl -> do
-      el "div" $ question (constDyn $ T.unpack picUrl) never False
-    _ -> text "Unable to fetch stimulus image" >> return (constDyn [])
+-- questionTagging :: MonadWidget t m
+--                 => (Assignment, StimulusSequence, StimSeqItem)
+--                 -> m (Dynamic t Result)
+-- questionTagging (asgn, stimseq, ssi) = do
+--   case ssiStimulus ssi of
+--     A.String picUrl -> do
+--       el "div" $ question (constDyn $ T.unpack picUrl) never False
+--     _ -> text "Unable to fetch stimulus image" >> return (constDyn [])
 
-question :: MonadWidget t m => Dynamic t String -> Event t () -> Bool -> m (Dynamic t [[TimedCoord]])
+question :: MonadWidget t m => Dynamic t T.Text -> Event t () -> Bool -> m (Dynamic t [[TimedCoord]])
 question imgUrl touchClears overlap = elAttr "div" (mayOverlapClass "question") $ do
 
   elAttr "div" (mayOverlapClass "example-area") $ do
-    divClass "goal-header" $ divClass "frog-div" $ elAttr "img" ("src" =: "static/frogpencil.jpg") fin
+    divClass "goal-header" $ divClass "frog-div" $ elAttr "img" ("src" =: "static/frogpencil.jpg") blank
     imgAttrs <- mapDyn (\i -> "class" =: "goal-img" <> "src" =: i) imgUrl
-    elDynAttr "img" imgAttrs fin
+    elDynAttr "img" imgAttrs blank
 
   da <- elAttr "div" (mayOverlapClass "drawing-area") $ do
     divClass "draw-header" $ if   overlap
-                             then fin
+                             then blank
                              else divClass "you-div" $ el "span" $ text "You"
     drawingArea touchClears defDAC
 
@@ -364,13 +361,13 @@ question imgUrl touchClears overlap = elAttr "div" (mayOverlapClass "question") 
 -----------------------------------------------------
 
 data ExperimentState t = ExperimentState
-  { _esSubject :: Dynamic t String
-  , _esPicSrcs :: Dynamic t [String]
+  { _esSubject :: Dynamic t T.Text
+  , _esPicSrcs :: Dynamic t [T.Text]
   }
 
 data Response = Response
-  { _rSubject   :: String
-  , _rImage     :: String
+  { _rSubject   :: T.Text
+  , _rImage     :: T.Text
   , _rStartTime :: UTCTime
   , _rEndTime   :: UTCTime
   , _rStrokes   :: [[TimedCoord]]
@@ -424,7 +421,8 @@ main = mainWidgetWithHead appHead $ mdo
                   forDyn showResults (bool (return never)
                                       (responsesWidget responses))
 
-  trialMetadata <- (,,,) `mapDyn` _esSubject es `apDyn` stimulus `apDyn` stimTime `apDyn` strokes
+  -- trialMetadata <- (,,,) `mapDyn` _esSubject es `apDyn` stimulus `apDyn` stimTime `apDyn` strokes
+  let trialMetadata = (,,,) <$> _esSubject es <*> stimulus <*> stimTime <*> strokes
 
   submits <- performEvent
     (ffor (tag (current trialMetadata) submitClicks) $ \(subj,stm,tStm,strk) -> do
@@ -443,18 +441,18 @@ settings = do
       nm   <- bootstrapLabeledInput "Subject" "subejct"
               (\a -> value <$> textInput (def & attributes .~ constDyn a))
 
-      el "br" fin
+      el "br" blank
       pics <- bootstrapLabeledInput "Images" "images"
               (\a -> value <$> textArea (def & attributes .~ constDyn ("id" =: "results" <> a)
                                              & textAreaConfig_initialValue .~ defaultPics))
-      pics' <- mapDyn Prelude.lines pics
+      pics' <- mapDyn T.lines pics
       return (ExperimentState nm pics')
     elClass "div" "settings-preview" $
       dyn =<< (forDyn (_esPicSrcs es) $ \pics ->
                 (forM_  pics
                  (\src -> elAttr
                           "img" ("class" =: "preview-pic" <> "src" =: src)
-                          fin)))
+                          blank)))
     return es
 
   closeButton <- fmap (domEvent Click . fst) $ elAttr' "button" ("class" =: "settings-ok btn btn-default-btn-lg") $ bootstrapButton "ok-circle"
@@ -463,7 +461,7 @@ settings = do
 responsesWidget :: MonadWidget t m => Dynamic t [Response] -> m (Event t ())
 responsesWidget resps = divClass "responses" $ do
   pb <- getPostBuild
-  rtext <- mapDyn (BSL.unpack . A.encodePretty) resps
+  rtext <- mapDyn (T.pack . BSL.unpack . A.encodePretty) resps
 
   (sel,clear) <- divClass "results-buttons" $ do
    sel <- fmap (domEvent Click . fst) $
@@ -484,7 +482,7 @@ responsesWidget resps = divClass "responses" $ do
   return clear
 
 
-bootstrapButton :: MonadWidget t m => String -> m (Event t ())
+bootstrapButton :: MonadWidget t m => T.Text -> m (Event t ())
 bootstrapButton glyphShortname = (domEvent Click . fst) <$>
   elAttr' "span" ("class" =: (prfx <> glyphShortname)) (return ())
   where prfx = "glyphicon glyphicon-"
@@ -492,11 +490,11 @@ bootstrapButton glyphShortname = (domEvent Click . fst) <$>
 ------------------------------------------------------------------------------
 -- | An externally-prodded validating label & text-input
 bootstrapLabeledInput :: forall t m.MonadWidget t m
-                      => String
-                      -> String
-                      -> (Map.Map String String -> m (Dynamic t String))
+                      => T.Text
+                      -> T.Text
+                      -> (Map.Map T.Text T.Text -> m (Dynamic t T.Text))
                       -- ^ function that uses arg as attributes in widget
-                      -> m (Dynamic t String)
+                      -> m (Dynamic t T.Text)
 bootstrapLabeledInput label idattr textwidget =
   elClass "div" "form-group" $ mdo
     elAttr "label" ("for" =: idattr) $ text label
@@ -510,26 +508,26 @@ appHead = do
   elAttr "link" ("rel" =: "stylesheet"
               <> "type" =: "text/css"
               <> "href" =: "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css")
-    fin
+    blank
   elAttr "link" ("href" =: "static/drawcopy.css"
               <> "rel"  =: "stylesheet"
-              <> "type" =: "text/css") fin
+              <> "type" =: "text/css") blank
   el "style" (text appStyle)
 
-appStyle :: String
-appStyle =  unlines [
+appStyle :: T.Text
+appStyle =  T.unlines [
  ".goal-img, canvas{"
- , "  height: "     ++ show canvH ++ "px;"
- , "  min-height: " ++ show canvH ++ "px;"
- , "  max-height: " ++ show canvH ++ "px;"
- , "  width: "      ++ show canvW ++ "px;"
- , "  min-width: "  ++ show canvW ++ "px;"
- , "  max-width: "  ++ show canvW ++ "px;"
+ , "  height: "     <> (T.pack . show) canvH <> "px;"
+ , "  min-height: " <> (T.pack . show) canvH <> "px;"
+ , "  max-height: " <> (T.pack . show) canvH <> "px;"
+ , "  width: "      <> (T.pack . show) canvW <> "px;"
+ , "  min-width: "  <> (T.pack . show) canvW <> "px;"
+ , "  max-width: "  <> (T.pack . show) canvW <> "px;"
  ,"}\n\n"
  ]
 
-defaultPics :: String
-defaultPics = unlines
+defaultPics :: T.Text
+defaultPics = T.unlines
   [ "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character01/0709_01.png"
   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character02/0710_01.png"
   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character03/0711_01.png"
@@ -584,18 +582,10 @@ touchRelCoord x0 y0 tch = do
 main' :: IO ()
 main' = mainWidgetWithHead appHead $ do
   da <- drawingArea never defDAC
-  fin
+  blank
 
 main'' :: IO ()
 main'' = mainWidget $ text "Hello"
-
-fin :: MonadWidget t m => m ()
-fin = return ()
-
-apDyn :: MonadWidget t m => m (Dynamic t (a -> b)) -> Dynamic t a -> m (Dynamic t b)
-apDyn mf a = do
-  f <- mf
-  combineDyn ($) f a
 
 getQueryParams :: Window -> IO (Map.Map String String)
 getQueryParams w = do
@@ -613,7 +603,7 @@ data JSString
 data CanvasStyle = CanvasStyle JSString
 data CanvasRenderingContext2D
 data ClientBoundingRect
-data Window
+-- data Window
 getLeft :: ClientBoundingRect -> m Float
 getLeft = undefined
 getTop :: ClientBoundingRect -> m Float
