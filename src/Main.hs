@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE JavaScriptFFI       #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -41,6 +42,7 @@ import qualified Data.Text as T
 import           GHC.Generics
 import           GHC.Int
 import           GHCJS.DOM
+import           GHCJS.DOM.Blob
 import           GHCJS.DOM.CanvasRenderingContext2D
 import           GHCJS.DOM.ClientRect
 import           GHCJS.DOM.Element (touchStart, mouseDown,
@@ -54,14 +56,15 @@ import           GHCJS.DOM.HTMLTextAreaElement (select)
 import qualified GHCJS.DOM.MouseEvent
 
 import           GHCJS.DOM.Types hiding (Event)
+import           GHCJS.DOM.URL
 import           Reflex hiding (select)
 import           Reflex.Dom hiding (restore, select, Window, Element, preventDefault)
 import           System.Random (StdGen, getStdGen, randomRIO)
 import           System.Random.MWC hiding (restore, save)
 #ifdef ghcjs_HOST_OS
 import           Data.JSString (JSString, pack)
-import           GHCJS.Marshal (fromJSVal)
-import           GHCJS.Types (jsval)
+import           GHCJS.Marshal (fromJSVal, toJSVal_aeson)
+import           GHCJS.Types (JSVal, jsval)
 import           GHCJS.DOM.Element (getBoundingClientRect)
 import           GHCJS.DOM.Location (getSearch)
 import           GHCJS.DOM.Touch      (getIdentifier,getClientX,getClientY)
@@ -86,7 +89,7 @@ defDAC = DrawingAreaConfig never (constant 10) (constant "black") never never
 data DrawingArea t = DrawingArea
   { _drawingArea_el      :: El t
   , _drawingArea_strokes :: Dynamic t [[TimedCoord]]
-  , _drawingArea_image   :: Event t ImageData }
+  , _drawingArea_image   :: Dynamic t T.Text }
 
 canvH, canvW :: Int
 canvW = 500
@@ -228,9 +231,15 @@ drawingArea touchClears cfg = mdo
   Just ctx <- liftIO $ fromJSVal =<< getContext canvEl ("2d" :: String)
   performEvent_ $ liftIO (clearArea ctx canvEl) <$ _drawingAreaConfig_clear cfg
 
-  pixels <- performEvent (liftIO (getCanvasBuffer ctx canvEl) <$ _drawingAreaConfig_send cfg)
+  -- pixels <- performEvent (liftIO (getCanvasBuffer ctx canvEl) <$ _drawingAreaConfig_send cfg)
 
   touches <- widgetTouches cEl touchClears
+
+  pixels <- holdDyn T.empty =<< performEvent (liftIO (toDataURL canvEl (Just ("image/jpeg" :: String))) <$
+                                              leftmost [_drawingAreaConfig_send cfg
+                                                       ,_drawingAreaConfig_clear cfg
+                                                       ,pb
+                                                       ,() <$ updated (_widgetTouches_finishedStrokes touches)])
 
   let s = _widgetTouches_finishedStrokes touches
 
@@ -324,7 +333,7 @@ redraw ctx canv (tc,bkg) = do
   forM_ tc $ drawStroke ctx
 
 
-type Result = [[TimedCoord]]
+-- type Result = [[TimedCoord]]
 
 
 -- questionTagging :: MonadWidget t m
@@ -336,7 +345,7 @@ type Result = [[TimedCoord]]
 --       el "div" $ question (constDyn $ T.unpack picUrl) never False
 --     _ -> text "Unable to fetch stimulus image" >> return (constDyn [])
 
-question :: MonadWidget t m => Dynamic t T.Text -> Event t () -> Bool -> m (Dynamic t [[TimedCoord]])
+question :: MonadWidget t m => Dynamic t T.Text -> Event t () -> Bool -> m (Dynamic t (T.Text, [[TimedCoord]]))
 question imgUrl touchClears overlap = elAttr "div" (mayOverlapClass "question") $ do
 
   elAttr "div" (mayOverlapClass "example-area") $ do
@@ -350,7 +359,7 @@ question imgUrl touchClears overlap = elAttr "div" (mayOverlapClass "question") 
                              else divClass "you-div" $ el "span" $ text "You"
     drawingArea touchClears defDAC
 
-  return $ _drawingArea_strokes da
+  return $ (,) <$> _drawingArea_image da <*> _drawingArea_strokes da
 
   where mayOverlapClass baseClass = "class" =: (baseClass <> bool "" " overlap" overlap)
 
@@ -371,6 +380,7 @@ data Response = Response
   , _rStartTime :: UTCTime
   , _rEndTime   :: UTCTime
   , _rStrokes   :: [[TimedCoord]]
+  , _rJpeg      :: T.Text
   } deriving (Show, Generic)
 
 instance A.ToJSON Response where
@@ -391,6 +401,7 @@ main = mainWidgetWithHead appHead $ mdo
   (settingsButton, showResults) <- divClass "button-bank" $ do
     settingsBtn <- bootstrapButton "cog"
     showResults <- toggle False =<< bootstrapButton "th-list"
+    downloadResults <- downloadLink responses
     return (settingsBtn, showResults)
 
   showSettings <- foldDyn ($) True $ leftmost [const False <$ closeSettings, not <$ settingsButton]
@@ -421,18 +432,42 @@ main = mainWidgetWithHead appHead $ mdo
                   forDyn showResults (bool (return never)
                                       (responsesWidget responses))
 
-  -- trialMetadata <- (,,,) `mapDyn` _esSubject es `apDyn` stimulus `apDyn` stimTime `apDyn` strokes
+
   let trialMetadata = (,,,) <$> _esSubject es <*> stimulus <*> stimTime <*> strokes
 
   submits <- performEvent
-    (ffor (tag (current trialMetadata) submitClicks) $ \(subj,stm,tStm,strk) -> do
+    (ffor (tag (current trialMetadata) submitClicks) $ \(subj,stm,tStm,(imgdata, strk)) -> do
         tNow <- liftIO getCurrentTime
-        return $ Response subj stm tStm tNow strk
+        return $ Response subj stm tStm tNow strk imgdata
     )
 
   responses <- foldDyn ($) [] (leftmost [fmap (:) submits, const [] <$ clearResults])
 
   return ()
+
+downloadLink :: MonadWidget t m => Dynamic t [Response] -> m ()
+downloadLink res = do
+  -- href <- holdDyn "" =<< performEvent (ffor (updated res) $ \r -> liftIO $ do
+  --   u <- newURL ("https://cbmm.github.io/drawcopy" :: String)
+  --   -- revokeObjectURL u ("revokeShouldNotSeeString" :: T.Text)
+  --   opts <- BlobPropertyBag <$> toJSVal_aeson (A.object ["type" A..= ("application/json" :: T.Text)])
+  --   d <- toJSVal_aeson r >>= \blb -> newBlob' [blb] (Just opts)
+  --   Just href <- createObjectURL u (Just d)
+  --   return (href))
+  href <- holdDyn "" =<< performEvent (ffor (updated res) (fmap T.pack . liftIO . enblobURL))
+  dynText href
+  elDynAttr "a" (fmap ((("download" =: "dl.json") <> ). ("href" =:)) href) $ text "DL!"
+
+#ifdef ghcjs_HOST_OS
+enblobURL :: A.ToJSON a => a -> IO String
+enblobURL a = fmap GHCJS.DOM.Types.fromJSString $ js_enblobURL =<< toJSVal_aeson (A.toJSON a)
+
+foreign import javascript unsafe "b = new Blob([JSON.stringify($1)],{type: 'application/json'}); $r = (window.URL ? URL : webkitURL).createObjectURL(b)"
+  js_enblobURL :: JSVal -> IO JSString
+#else
+enblobURL :: A.ToJSON a => a -> IO String
+enblobURL = undefined
+#endif
 
 settings :: MonadWidget t m => m (ExperimentState t, Event t ())
 settings = do
@@ -575,7 +610,6 @@ touchRelCoord x0 y0 tch = do
 
 --   fin
 
-
 -- taggingMain :: IO ()
 -- taggingMain = mainWidget interactionWidget
 
@@ -636,4 +670,15 @@ setLineWidth = undefined
 setLineCap = undefined
 getLocation = undefined
 getSearch = undefined
+data URL
+newURL :: String -> IO URL
+newURL = undefined
+data JSVal
+newtype BlobPropertyBag = BlobPropertyBag JSVal
+newBlob' = undefined
+toJSVal_aeson = undefined
+revokeObjectURL = undefined
+createObjectURL = undefined
+toDataURL :: HTMLCanvasElement -> Maybe String -> IO T.Text
+toDataURL = undefined
 #endif
