@@ -34,11 +34,12 @@ import           Data.Char (toLower)
 import           Data.Foldable hiding (filter, null, foldl')
 import           Data.Traversable hiding (filter, null)
 import qualified Data.Map as Map
-import           Data.Maybe (catMaybes)
+import           Data.Maybe (catMaybes, isJust)
 import           Data.String.QQ
 import           Data.Time
 import           Data.Monoid ((<>))
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import           GHC.Generics
 import           GHC.Int
 import           GHCJS.DOM
@@ -401,10 +402,12 @@ main = mainWidgetWithHead appHead $ mdo
   (settingsButton, showResults) <- divClass "button-bank" $ do
     settingsBtn <- bootstrapButton "cog"
     showResults <- toggle False =<< bootstrapButton "th-list"
-    downloadResults <- downloadLink responses
+    downloadResults <- downloadLink dbx (_esSubject es) responses
     return (settingsBtn, showResults)
 
-  showSettings <- foldDyn ($) True $ leftmost [const False <$ closeSettings, not <$ settingsButton]
+  showSettings <- foldDyn ($) True $ leftmost [const False <$ closeSettings
+                                              ,not <$ settingsButton]
+
   picIndex <- foldDyn ($) 0 $
               leftmost [ const 0 <$ updated (_esPicSrcs es)
                        , succ    <$ submits
@@ -426,7 +429,7 @@ main = mainWidgetWithHead appHead $ mdo
 
   settingsAts <- forDyn showSettings $
     ("class" =: "settings" <>) . bool ("style" =: "display:none") mempty
-  (es, closeSettings) <- elDynAttr "div" settingsAts settings
+  (es, closeSettings, dbx) <- elDynAttr "div" settingsAts settings
 
   clearResults <- switchPromptly never =<< dyn =<<
                   forDyn showResults (bool (return never)
@@ -445,8 +448,8 @@ main = mainWidgetWithHead appHead $ mdo
 
   return ()
 
-downloadLink :: MonadWidget t m => Dynamic t [Response] -> m ()
-downloadLink res = do
+downloadLink :: MonadWidget t m => Dynamic t (Maybe DropboxConnection) -> Dynamic t T.Text -> Dynamic t [Response] -> m ()
+downloadLink conn nm res = do
   -- href <- holdDyn "" =<< performEvent (ffor (updated res) $ \r -> liftIO $ do
   --   u <- newURL ("https://cbmm.github.io/drawcopy" :: String)
   --   -- revokeObjectURL u ("revokeShouldNotSeeString" :: T.Text)
@@ -454,9 +457,16 @@ downloadLink res = do
   --   d <- toJSVal_aeson r >>= \blb -> newBlob' [blb] (Just opts)
   --   Just href <- createObjectURL u (Just d)
   --   return (href))
-  href <- holdDyn "" =<< performEvent (ffor (updated res) (fmap T.pack . liftIO . enblobURL))
-  dynText href
-  elDynAttr "a" (fmap ((("download" =: "dl.json") <> ). ("href" =:)) href) $ text "DL!"
+  -- href <- holdDyn "" =<< performEvent (ffor (updated res) (fmap T.pack . liftIO . enblobURL))
+  -- dynText href
+  -- elDynAttr "a" (fmap ((("download" =: "dl.json") <> ). ("href" =:)) href) $ text "DL!"
+  b <- button "Send"
+  let href = fmap (T.decodeUtf8 . BSL.toStrict . A.encode) res
+      payloadData = (,,) <$> conn <*> nm <*> href
+  sendRes <- performEvent $ ffor (tagDyn payloadData b) $ \case
+    (Nothing,_,_)    -> return False
+    (Just dbx, nm', hr) -> liftIO $ dbSend dbx nm' hr
+  elDynAttr "a" (fmap (("href" =:) . ("mailto:?subject=Drawcopy&body=" <>)) href) $ text "Email"
 
 #ifdef ghcjs_HOST_OS
 enblobURL :: A.ToJSON a => a -> IO String
@@ -469,10 +479,54 @@ enblobURL :: A.ToJSON a => a -> IO String
 enblobURL = undefined
 #endif
 
-settings :: MonadWidget t m => m (ExperimentState t, Event t ())
+data DropboxConnection = DBConn JSVal
+
+#ifdef ghcjs_HOST_OS
+dbConn :: T.Text -> IO DropboxConnection
+dbConn key = js_dbConn (toJSString key) >>= return . DBConn
+
+foreign import javascript unsafe "new Dropbox({accessToken: $1})" js_dbConn :: JSString -> IO JSVal
+
+checkConn :: DropboxConnection -> IO Bool
+checkConn (DBConn c) = js_checkConn c
+
+dbSend :: DropboxConnection -> T.Text -> T.Text -> IO Bool
+dbSend (DBConn c) fname payload = js_dropboxSend c (toJSString fname) (toJSString payload)
+
+foreign import javascript interruptible "($1).filesUpload({path:'/' + ($2) + '.json', contents: $3}).then(function(r){ $c(true); }, function(e) { $c(false);});"
+  js_dropboxSend :: JSVal -> JSString -> JSString -> IO Bool
+
+foreign import javascript interruptible "($1).filesListFolder({path:''}).then(function(r){ $c(true); }, function(e){ $c(false); });"
+  js_checkConn :: JSVal -> IO Bool
+#else
+dbConn :: T.Text -> IO DropboxConnection
+dbConn = undefined
+
+checkConn :: DropboxConnection -> IO Bool
+checkConn = undefined
+
+dbSend :: DropboxConnection -> T.Text -> T.Text -> IO Bool
+dbSend = undefined
+#endif
+
+
+settings :: MonadWidget t m => m (ExperimentState t, Event t (), Dynamic t (Maybe DropboxConnection))
 settings = do
-  es <- elClass "div" "settings-top" $ do
-    es <- elClass "div" "settings-fields" $ do
+  pb <- getPostBuild
+  (es,dbx) <- elClass "div" "settings-top" $ do
+    (es,dbx) <- elClass "div" "settings-fields" $ do
+      dbx <- divClass "dropbox-connection" $ do
+        dbKey <- bootstrapLabeledInput "Dropbox Token" "token"
+                 (\a -> value <$> textInput (def & attributes .~ constDyn a))
+        connect <- button "Connect"
+        conns <- performEvent (ffor (tagDyn dbKey connect) $ \k -> liftIO $ do
+                                  c  <- dbConn k
+                                  ok <- checkConn c
+                                  return $ bool Nothing (Just c)  ok
+                              )
+        conn <- holdDyn Nothing conns
+        dynText (fmap (("Good Conn:" <>) . T.pack . show . isJust) conn)
+        return conn
       nm   <- bootstrapLabeledInput "Subject" "subejct"
               (\a -> value <$> textInput (def & attributes .~ constDyn a))
 
@@ -481,17 +535,17 @@ settings = do
               (\a -> value <$> textArea (def & attributes .~ constDyn ("id" =: "results" <> a)
                                              & textAreaConfig_initialValue .~ defaultPics))
       pics' <- mapDyn T.lines pics
-      return (ExperimentState nm pics')
+      return (ExperimentState nm pics',dbx)
     elClass "div" "settings-preview" $
       dyn =<< (forDyn (_esPicSrcs es) $ \pics ->
                 (forM_  pics
                  (\src -> elAttr
                           "img" ("class" =: "preview-pic" <> "src" =: src)
                           blank)))
-    return es
+    return (es,dbx)
 
   closeButton <- fmap (domEvent Click . fst) $ elAttr' "button" ("class" =: "settings-ok btn btn-default-btn-lg") $ bootstrapButton "ok-circle"
-  return (es,closeButton)
+  return (es,closeButton,dbx)
 
 responsesWidget :: MonadWidget t m => Dynamic t [Response] -> m (Event t ())
 responsesWidget resps = divClass "responses" $ do
@@ -543,6 +597,8 @@ appHead = do
   elAttr "link" ("rel" =: "stylesheet"
               <> "type" =: "text/css"
               <> "href" =: "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css")
+    blank
+  elAttr "script" ("scr" =: "https://cdnjs.cloudflare.com/ajax/libs/dropbox.js/2.2.1/Dropbox-sdk.min.js")
     blank
   elAttr "link" ("href" =: "static/drawcopy.css"
               <> "rel"  =: "stylesheet"
