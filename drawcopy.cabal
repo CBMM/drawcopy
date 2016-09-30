@@ -33,6 +33,8 @@ executable drawcopy
                        random,
                        reflex, 
                        reflex-dom >= 0.4 && < 0.5, 
+                       servant >= 0.7 && < 0.9,
+                       servant-reflex >= 0.2 && < 0.3,
                        ghcjs-dom >= 0.2 && < 0.3,
 --                        tagging-common >= 0.1 && < 0.2,
                        text,

@@ -1,0 +1,6 @@
+[submodule "deps/servant-reflex"]
+	path = deps/servant-reflex
+	url = https://github.com/imalsogreg/servant-reflex
+[submodule "deps/servant"]
+	path = deps/servant
+	url = https://github.com/haskell-servant/servant
