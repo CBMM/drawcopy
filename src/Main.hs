@@ -3,9 +3,11 @@
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE JavaScriptFFI       #-}
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE RecursiveDo         #-}
@@ -33,6 +35,7 @@ import           Data.Bool (bool)
 import           Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import           Data.Char (toLower)
+import           Data.Default (Default(..))
 import           Data.Foldable hiding (filter, null, foldl')
 import           Data.Proxy
 import           Data.Traversable hiding (filter, null)
@@ -340,23 +343,16 @@ redraw ctx canv (tc,bkg) = do
   forM_ tc $ drawStroke ctx
 
 
--- type Result = [[TimedCoord]]
-
-
--- questionTagging :: MonadWidget t m
---                 => (Assignment, StimulusSequence, StimSeqItem)
---                 -> m (Dynamic t Result)
--- questionTagging (asgn, stimseq, ssi) = do
---   case ssiStimulus ssi of
---     A.String picUrl -> do
---       el "div" $ question (constDyn $ T.unpack picUrl) never False
---     _ -> text "Unable to fetch stimulus image" >> return (constDyn [])
-
-question :: MonadWidget t m => Dynamic t T.Text -> Event t () -> Bool -> m (Dynamic t (T.Text, [[TimedCoord]]))
+question :: MonadWidget t m
+         => Dynamic t T.Text
+         -> Event t ()
+         -> Bool
+         -> m (Dynamic t (T.Text, [[TimedCoord]]))
 question imgUrl touchClears overlap = elAttr "div" (mayOverlapClass "question") $ do
 
   elAttr "div" (mayOverlapClass "example-area") $ do
-    divClass "goal-header" $ divClass "frog-div" $ elAttr "img" ("src" =: "static/frogpencil.jpg") blank
+    divClass "goal-header" $ divClass "frog-div" $
+      elAttr "img" ("src" =: "static/frogpencil.jpg") blank
     let imgAttrs = (\i -> "class" =: "goal-img" <> "src" =: i) <$> imgUrl
     elDynAttr "img" imgAttrs blank
 
@@ -403,10 +399,10 @@ main = mainWidgetWithHead appHead $ run
 
 run :: forall t m. MonadWidget t m => m ()
 run = mdo
-  let dbClient   = client dbApi (Proxy :: Proxy m)
-                   (constDyn (BaseFullUrl Https "api.dropbox.com" 443 "/"))
+  let dbClient u = client dbApi (Proxy :: Proxy m)
+                   (constDyn (BaseFullUrl Https u 443 "/"))
       dbKeyParam = (Right . DBBearer <$> dbKey)
-      (dbList :<|> _) = dbClient dbKeyParam
+      (dbList :<|> _) = dbClient "api.dropbox.com" dbKeyParam
   params <- liftIO $ currentWindow >>= \(Just win) -> getQueryParams win
   let overlap = let l = Map.lookup "overlap" params
                 in  not (l == Nothing || l == Just "false")
@@ -415,7 +411,6 @@ run = mdo
   (settingsButton, showResults) <- divClass "button-bank" $ do
     settingsBtn <- bootstrapButton "cog"
     showResults <- toggle False =<< bootstrapButton "th-list"
-    downloadResults <- downloadLink dbx (_esSubject es) responses
     return (settingsBtn, showResults)
 
   showSettings <- foldDyn ($) True $ leftmost [const False <$ closeSettings
@@ -435,9 +430,6 @@ run = mdo
                  (_esPicSrcs es)
 
   (strokes, submitClicks) <- divClass "interaction" $ do
-    b <- button "Get dir"
-    r <- dbList (constDyn $ Right $ DBReq "") b
-    dynText =<< holdDyn "" (T.pack . show <$> fmapMaybe reqSuccess r)
     strokes <- question stimulus (() <$ submits) overlap
     btn <- fmap fst $ elAttr' "button" ("class" =: "submit-button btn btn-default-btn-lg") $ bootstrapButton "ok-circle"
     let submitClicks = domEvent Click btn
@@ -463,15 +455,6 @@ run = mdo
 
   return ()
 
-downloadLink :: MonadWidget t m => Dynamic t (Maybe DropboxConnection) -> Dynamic t T.Text -> Dynamic t [Response] -> m ()
-downloadLink conn nm res = do
-  b <- button "Send"
-  let href = fmap (T.decodeUtf8 . BSL.toStrict . A.encode) res
-      payloadData = (,,) <$> conn <*> nm <*> href
-  sendRes <- performEvent $ ffor (tagPromptlyDyn payloadData b) $ \case
-    (Nothing,_,_)    -> return False
-    (Just dbx, nm', hr) -> liftIO $ dbSend dbx nm' hr
-  elDynAttr "a" (fmap (("href" =:) . ("mailto:?subject=Drawcopy&body=" <>)) href) $ text "Email"
 
 #ifdef ghcjs_HOST_OS
 enblobURL :: A.ToJSON a => a -> IO String
@@ -559,34 +542,61 @@ settings = do
   closeButton <- fmap (domEvent Click . fst) $ elAttr' "button" ("class" =: "settings-ok btn btn-default-btn-lg") $ bootstrapButton "ok-circle"
   return (es,closeButton,dbx,dbKey)
 
-responsesWidget :: MonadWidget t m
-                => Client t m DropboxApi
+responsesWidget :: forall t m.MonadWidget t m
+                => (T.Text -> Client t m DropboxApi)
                 -> Dynamic t (Either T.Text DropboxBearer)
                 -> Dynamic t [Response]
                 -> m (Event t ())
 responsesWidget endpoints dbKey resps = divClass "responses" $ do
   pb <- getPostBuild
-  let (dbList :<|> dbDown) = endpoints dbKey
+  let (dbList :<|> _      :<|> _   ) = endpoints "api.dropbox.com" dbKey
+      (_      :<|> dbDown :<|> dbUp) = endpoints "content.dropboxapi.com" dbKey
       rtext = (T.pack . BSL.unpack . A.encodePretty) <$> resps
 
-  (refresh,clear) <- divClass "results-buttons" $ do
-    refresh <- fmap (domEvent Click . fst) $
-           elAttr' "button" ("class" =: "btn btn-large results-select") $ do
+  (refresh,clear,send) <- divClass "results-buttons" $ do
+    refresh <- fmap (domEvent Click . fst) $ elAttr' "button" ("class" =: "btn btn-large results-select") $ do
       b <- bootstrapButton "screenshot"
       text "Refresh"
-    clear <- fmap (domEvent Click . fst) $
-             elAttr' "button" ("class" =: "btn btn-large results-remove") $ do
+    clear <- fmap (domEvent Click . fst) $ elAttr' "button" ("class" =: "btn btn-large results-remove") $ do
       b <- bootstrapButton "remove"
       text "Reset results"
-    return (refresh,clear)
+    send  <- fmap (domEvent Click . fst) $ elAttr' "button" ("class" =: "btn btn-large results-send") $ do
+      b <- bootstrapButton "send"
+      text "Send results"
+    return (refresh,clear,send)
 
-  ta <- _textArea_element <$> textArea
-        (def & textAreaConfig_setValue .~ leftmost [tag (current rtext) pb,
-                                                    "[]" <$ clear])
 
-  performEvent_ (liftIO (select ta) <$ leftmost [pb, () <$ updated rtext, sel])
+  let timeToName :: UTCTime -> T.Text
+      timeToName t = T.pack $ formatTime defaultTimeLocale "drawcopy-%F-%H.%M.%S.json" t
+  ts <- performEvent (ffor send $ \() -> liftIO getCurrentTime)
+  newFilename <- traceDyn "name" <$>  holdDyn "file.json" (timeToName <$> ts)
+  dbUp (((\n -> Right (DBUp ("/" <> n) Upload_add True False)) <$> newFilename)) (Right <$> resps) (() <$ updated newFilename)
+
+  otherDataFiles <- holdDyn [] . fmap _dbesEntries . fmapMaybe reqSuccess =<<
+    dbList (constDyn . Right $ DBReq "") (leftmost [refresh, pb])
+
+  let ddEntries = ffor otherDataFiles $ \es ->
+           (Nothing =: "Current")
+        <> Map.fromList ((\(DBEntry n p _ _ _ _ _) -> (Just p, n)) <$> es)
+  datSel :: Dynamic t (Maybe T.Text) <- value <$> dropdown Nothing ddEntries def
+  otherData <- dbDown (fmap (maybe (Left "No filename") (Right . DBReq)) datSel)
+                      (() <$ fmapMaybe id (updated datSel))
+  dataPreview <- holdDyn [] $ leftmost [updated resps
+                                       ,fmapMaybe reqSuccess otherData
+                                       ,tagPromptlyDyn resps (updated datSel)
+                                       ]
+
+  dyn $ ffor dataPreview $ \dp -> elAttr "div" ("class" =: "previews" <> "style" =: "display: flex; flex-wrap:wrap;") $
+    for_ dp $ \(Response subj img _ _ _ rImg) -> do
+      elAttr "div" ("class" =: "response-preview" <> "style" =: "margin: 3px;") $ do
+        elAttr "img" ("src" =: img)  blank
+        elAttr "img" ("src" =: rImg <> "style" =: "width:105px;") blank
+
   return clear
 
+note :: e -> Maybe a -> Either e a
+note e Nothing  = Left e
+note _ (Just x) = Right x
 
 bootstrapButton :: MonadWidget t m => T.Text -> m (Event t ())
 bootstrapButton glyphShortname = (domEvent Click . fst) <$>
@@ -731,8 +741,12 @@ data DBReq = DBReq {
 instance A.ToJSON DBReq where
   toJSON = A.genericToJSON A.defaultOptions { A.fieldLabelModifier = fmap toLower . drop 4 }
 
+instance ToHttpApiData DBReq where
+  -- toQueryParam (DBBearer t) = "Bearer " <> t
+  toQueryParam = T.decodeUtf8 . BSL.toStrict . A.encode
+
 data DBEntries = DBEntries {
-  _dbesEntries :: [DBEntry]
+    _dbesEntries :: [DBEntry]
   , _dbesCursor :: T.Text
   , _dbesHas_more :: Bool
   } deriving (Generic, Show)
@@ -740,11 +754,35 @@ data DBEntries = DBEntries {
 instance A.FromJSON DBEntries where
   parseJSON = A.genericParseJSON A.defaultOptions { A.fieldLabelModifier = fmap toLower . drop 5 }
 
+data DBUp = DBUp {
+    _dbupPath :: T.Text
+  , _dbupMode :: UploadMode
+  , _dbupAutorename :: Bool
+  , _dbupMute :: Bool
+  } deriving (Eq, Ord, Show, Generic)
 
+data UploadMode =  Upload_add | Upload_overwrite | Upload_update
+  deriving (Eq, Show, Read, Ord, Generic)
+
+instance A.ToJSON UploadMode where
+  toJSON = A.String . T.drop 7 . T.pack . show
+
+instance ToHttpApiData DBUp where
+  toQueryParam = T.decodeUtf8 . BSL.toStrict . A.encode
+
+instance A.ToJSON DBUp where
+  toJSON = A.genericToJSON A.defaultOptions { A.fieldLabelModifier = fmap toLower . drop 5 }
+
+instance Default DBUp where
+  def = DBUp "/file.txt" Upload_add True False
+
+instance MimeRender OctetStream [Response] where
+  mimeRender _ val = A.encode val
 
 type DropboxApi = "2" :> "files" :> Header "Authorization" DropboxBearer :>
   ("list_folder" :> ReqBody '[JSON] DBReq :> Post '[JSON] DBEntries
-  :<|> "download" :> ReqBody '[JSON] DBReq :> Post '[JSON] [Response])
+  :<|> "download" :> Header "Dropbox-API-Arg" DBReq :> Post '[JSON] [Response]
+  :<|> "upload" :> Header "Dropbox-API-Arg" DBUp :> ReqBody '[OctetStream] [Response] :> Post '[JSON] DBEntry)
 
 #ifdef ghcjs_HOST_OS
 #else

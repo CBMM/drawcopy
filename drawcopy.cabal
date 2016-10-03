@@ -25,6 +25,7 @@ executable drawcopy
                        bifunctors,
                        bytestring,
                        containers,
+                       data-default,
                        lens,
                        mtl,
                        mwc-random,
