@@ -383,6 +383,7 @@ data Response = Response
   , _rStartTime :: UTCTime
   , _rEndTime   :: UTCTime
   , _rStrokes   :: [[TimedCoord]]
+  , _rOverlap   :: Bool
   , _rJpeg      :: T.Text
   } deriving (Show, Generic)
 
@@ -418,6 +419,7 @@ run = mdo
 
   picIndex <- foldDyn ($) 0 $
               leftmost [ const 0 <$ updated (_esPicSrcs es)
+                       , const 0 <$ clearResults
                        , succ    <$ submits
                        ]
 
@@ -443,12 +445,12 @@ run = mdo
                                       (responsesWidget dbClient dbKeyParam responses)) <$> showResults)
 
 
-  let trialMetadata = (,,,) <$> _esSubject es <*> stimulus <*> stimTime <*> strokes
+  let trialMetadata = (,,,,) <$> _esSubject es <*> stimulus <*> stimTime <*> pure overlap <*> strokes
 
   submits <- performEvent
-    (ffor (tag (current trialMetadata) submitClicks) $ \(subj,stm,tStm,(imgdata, strk)) -> do
+    (ffor (tag (current trialMetadata) submitClicks) $ \(subj,stm,tStm,ovlp,(imgdata, strk)) -> do
         tNow <- liftIO getCurrentTime
-        return $ Response subj stm tStm tNow strk imgdata
+        return $ Response subj stm tStm tNow strk ovlp imgdata
     )
 
   responses <- foldDyn ($) [] (leftmost [fmap (:) submits, const [] <$ clearResults])
@@ -587,7 +589,7 @@ responsesWidget endpoints dbKey resps = divClass "responses" $ do
                                        ]
 
   dyn $ ffor dataPreview $ \dp -> elAttr "div" ("class" =: "previews" <> "style" =: "display: flex; flex-wrap:wrap;") $
-    for_ dp $ \(Response subj img _ _ _ rImg) -> do
+    for_ dp $ \(Response subj img _ _ _ _ rImg) -> do
       elAttr "div" ("class" =: "response-preview" <> "style" =: "margin: 3px;") $ do
         elAttr "img" ("src" =: img)  blank
         elAttr "img" ("src" =: rImg <> "style" =: "width:105px;") blank
@@ -742,7 +744,6 @@ instance A.ToJSON DBReq where
   toJSON = A.genericToJSON A.defaultOptions { A.fieldLabelModifier = fmap toLower . drop 4 }
 
 instance ToHttpApiData DBReq where
-  -- toQueryParam (DBBearer t) = "Bearer " <> t
   toQueryParam = T.decodeUtf8 . BSL.toStrict . A.encode
 
 data DBEntries = DBEntries {
