@@ -646,8 +646,8 @@ appStyle =  T.unlines [
  ,"}\n\n"
  ]
 
-defaultPics :: T.Text
-defaultPics = T.unlines
+defaultPics' :: T.Text
+defaultPics' = T.unlines
   [ "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character01/0709_01.png"
   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character02/0710_01.png"
   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character03/0711_01.png"
@@ -660,6 +660,23 @@ defaultPics = T.unlines
   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character10/0718_01.png"
   ]
 
+defaultPics :: T.Text
+defaultPics = T.unlines
+  ["https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten6.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten5.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten49.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten47.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten44.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten41.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten40.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten38.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten37.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten23.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten19.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten16.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten17.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten18.png"
+  ]
 
 relativizedCoord :: Int -> Int -> TimedCoord -> TimedCoord
 relativizedCoord x0 y0 (TC t x y) =
