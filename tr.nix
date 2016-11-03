@@ -5,7 +5,7 @@ let
 in
 reflex-platform.ghcjs.override {
   overrides = self: super: { 
-     servant-reflex      = dontCheck (self.callPackage (reflex-platform.cabal2nixResult ../servant-reflex) {});
+     servant-reflex      = dontCheck (self.callPackage (reflex-platform.cabal2nixResult deps/servant-reflex) {});
      #servant             = dontCheck (self.callPackage (reflex-platform.cabal2nixResult deps/servant/servant) {});
   };
 }
