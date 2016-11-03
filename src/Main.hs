@@ -438,7 +438,7 @@ run = mdo
     return (strokes, submitClicks)
 
   let settingsAts = ("class" =: "settings" <>) . bool ("style" =: "display:none") mempty <$> showSettings
-  (es, closeSettings, dbx, dbKey) <- elDynAttr "div" settingsAts settings
+  (es, closeSettings, dbx, dbKey) <- elDynAttr "div" settingsAts (settings overlap)
 
   clearResults <- switchPromptly never =<< dyn
                   ((bool (return never)
@@ -507,8 +507,8 @@ dbSend = undefined
 #endif
 
 
-settings :: MonadWidget t m => m (ExperimentState t, Event t (), Dynamic t (Maybe DropboxConnection), Dynamic t T.Text)
-settings = do
+settings :: MonadWidget t m => Bool -> m (ExperimentState t, Event t (), Dynamic t (Maybe DropboxConnection), Dynamic t T.Text)
+settings overlap = do
   pb <- getPostBuild
   (es,dbx,dbKey) <- elClass "div" "settings-top" $ do
     (es,dbx,dbKey) <- elClass "div" "settings-fields" $ do
@@ -529,8 +529,10 @@ settings = do
 
       el "br" blank
       pics <- bootstrapLabeledInput "Images" "images"
-              (\a -> value <$> textArea (def & attributes .~ constDyn ("id" =: "results" <> a)
-                                             & textAreaConfig_initialValue .~ defaultPics))
+              (\a -> value <$> textArea
+                (def & attributes .~ constDyn ("id" =: "results" <> a)
+                     & textAreaConfig_initialValue .~
+                         bool nonOverlapImages overlapImages overlap))
       let pics' = T.lines <$> pics
       return (ExperimentState nm pics',dbx,dbKey)
     elClass "div" "settings-preview" $
@@ -646,20 +648,44 @@ appStyle =  T.unlines [
  ,"}\n\n"
  ]
 
-defaultPics :: T.Text
-defaultPics = T.unlines
-  [ "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character01/0709_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character02/0710_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character03/0711_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character04/0712_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character05/0713_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character06/0714_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character07/0715_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character08/0716_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character09/0717_01.png"
-  , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character10/0718_01.png"
+-- defaultPics :: T.Text
+-- defaultPics = T.unlines
+--   [ "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character01/0709_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character02/0710_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character03/0711_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character04/0712_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character05/0713_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character06/0714_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character07/0715_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character08/0716_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character09/0717_01.png"
+--   , "https://s3.amazonaws.com/lakecharacters/Alphabet_of_the_Magi/character10/0718_01.png"
+--   ]
+
+
+
+nonOverlapImages :: T.Text
+nonOverlapImages = T.unlines
+  ["https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten50.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten6.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten5.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten49.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten47.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten44.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten41.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten40.png"
   ]
 
+overlapImages :: T.Text
+overlapImages = T.unlines
+  ["https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten38.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten37.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten23.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten19.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten16.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten17.png"
+  ,"https://s3.amazonaws.com/lakecharacter/Omniglot_letters/Drawcopy/handwritten18.png"
+  ]
 
 relativizedCoord :: Int -> Int -> TimedCoord -> TimedCoord
 relativizedCoord x0 y0 (TC t x y) =
